@@ -36,7 +36,7 @@ const EXTRACT_EVENT_TOOL = {
       description: {
         type: "string",
         description:
-          "Any remaining detail from the note worth keeping (context, people, location). Empty string if nothing extra.",
+          "Any substantive detail from the note beyond the title, date/time, and attendee list -- e.g. an agenda item, case/matter reference, location, or instruction. Never restate who is attending or invent filler like 'call scheduled with X' or 'meeting with X' -- the title and attendee list already cover that, and repeating it is not real content. Empty string if the note says nothing beyond who/when.",
       },
       date: {
         type: "string",
@@ -121,6 +121,7 @@ Resolve all relative dates/times ("tomorrow", "next Thursday", "in two weeks", "
 Rules:
 - Extract exactly one event. If the note lists multiple, use the first/primary one and mention the rest in "description".
 - Title should be short and human-friendly (e.g. "Deposition prep with Sarah"), not the raw note text.
+- description must add real information beyond the title and attendee list -- never restate "call/meeting with X" as description text just because someone was named as an attendee. If the note has nothing further (no agenda, case reference, location, or other detail beyond who and when), leave description as an empty string.
 - Default event length is 60 minutes when no end time or duration is given.
 - Default reminder is one popup 30 minutes before, unless the note specifies reminder timing or method (e.g. "email me a day before", "remind me an hour ahead", "no reminder" -> empty reminders array).
 - Attendees: pull out people the note says to meet with, invite, cc, or have attend -- including phrasing like "X to attend", "attendees: X, Y", or "X and Y will be there", not just "with X" -- not the note-taker. A name is only an attendee if the note says that person is participating, invited, cc'd, or attending -- a name that appears merely as part of a case/matter name, party name, or subject reference (e.g. "Smith v. Jones", "the Dillon matter", "re: Johnson deposition", a case caption, a docket title) is NOT an attendee unless the note separately says that person is attending or should be invited. When in doubt, leave them out rather than guessing. Only fill in an email if the note literally contains one; otherwise leave email as "" and put their name in "name" exactly as written (e.g. "Sarah", "the Hendricks", "opposing counsel on Mercer") — a name-only attendee gets matched against the user's contacts afterward, so don't guess or fabricate an address.
