@@ -30,11 +30,12 @@ export async function GET(req: NextRequest) {
     // A remembered name -> email choice for this exact query wins: surface
     // it first (and drop any duplicate further down) so the caller can
     // treat it as the confident, "we remember this" pick rather than one
-    // suggestion among several.
-    let ranked = matches;
+    // suggestion among several. Widened to a local type here (rather than
+    // ContactMatch[]) since "alias" isn't one of that type's source values.
+    let ranked: { name: string; email: string; source: string }[] = matches;
     if (alias) {
       ranked = [
-        { name: query, email: alias.email, source: "alias" as const },
+        { name: query, email: alias.email, source: "alias" },
         ...matches.filter((m) => m.email !== alias.email),
       ];
     }
