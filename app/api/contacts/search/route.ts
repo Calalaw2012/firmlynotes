@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getGoogleAccessToken, GoogleAuthError } from "@/lib/googleCalendar";
+import { getGoogleAccessToken, GoogleAuthError, getUserEmail } from "@/lib/googleCalendar";
 import { searchGoogleContacts } from "@/lib/googlePeople";
+import { getAttendeeAlias } from "@/lib/attendeeAliases";
 
 export async function GET(req: NextRequest) {
   let accessToken: string;
@@ -18,9 +19,27 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ matches: [] });
   }
 
+  const userEmail = await getUserEmail(req);
+
   try {
-    const matches = await searchGoogleContacts(accessToken, query);
-    return NextResponse.json({ matches });
+    const [matches, alias] = await Promise.all([
+      searchGoogleContacts(accessToken, query),
+      userEmail ? getAttendeeAlias(userEmail, query) : Promise.resolve(null),
+    ]);
+
+    // A remembered name -> email choice for this exact query wins: surface
+    // it first (and drop any duplicate further down) so the caller can
+    // treat it as the confident, "we remember this" pick rather than one
+    // suggestion among several.
+    let ranked = matches;
+    if (alias) {
+      ranked = [
+        { name: query, email: alias.email, source: "alias" as const },
+        ...matches.filter((m) => m.email !== alias.email),
+      ];
+    }
+
+    return NextResponse.json({ matches: ranked, aliasEmail: alias?.email ?? null });
   } catch (err) {
     console.error("contact search failed", err);
     return NextResponse.json({ matches: [] });
