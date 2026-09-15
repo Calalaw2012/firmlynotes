@@ -7,7 +7,7 @@ import type { Attendee } from "@/types/event";
 interface Suggestion {
   name: string;
   email: string;
-  source: "contacts" | "other" | "alias";
+  source: "contacts" | "other" | "alias" | "directory";
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -175,6 +175,11 @@ export default function AttendeesEditor({
                         ★
                       </span>
                     )}
+                {s.source === "directory" && (
+                  <span title="From the calalaw.com directory" className="text-ink-faint">
+                    (firm)
+                  </span>
+                )}
                     <span className="truncate">{s.name}</span>
                   </span>
                   <span className="shrink-0 truncate text-xs text-ink-faint">{s.email}</span>
