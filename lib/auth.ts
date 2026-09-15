@@ -70,7 +70,19 @@ export const authOptions: NextAuthOptions = {
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID ?? "",
       clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+      // The built-in Google provider preset normally resolves its OAuth
+      // endpoints via `wellKnown` (a live https://accounts.google.com/
+      // .well-known/openid-configuration discovery fetch through the
+      // `openid-client` library). That library issues the request with
+      // Node's raw `https.request()`, which Cloudflare Workers' nodejs_compat
+      // layer does not implement ("[unenv] https.request is not implemented
+      // yet!") — it throws before the user ever reaches Google's sign-in
+      // page. Setting `wellKnown: undefined` and supplying Google's (stable,
+      // published) endpoints directly skips discovery entirely, so the
+      // provider only ever uses ordinary `fetch`, which Workers supports.
+      wellKnown: undefined,
       authorization: {
+        url: "https://accounts.google.com/o/oauth2/v2/auth",
         params: {
           scope: GOOGLE_SCOPES,
           access_type: "offline",
@@ -84,6 +96,16 @@ export const authOptions: NextAuthOptions = {
           // the signIn callback below is the real gate.
           ...(ALLOWED_EMAIL_DOMAIN ? { hd: ALLOWED_EMAIL_DOMAIN } : {}),
         },
+      },
+      token: "https://oauth2.googleapis.com/token",
+      userinfo: "https://openidconnect.googleapis.com/v1/userinfo",
+      profile(profile) {
+        return {
+          id: profile.sub,
+          name: profile.name,
+          email: profile.email,
+          image: profile.picture,
+        };
       },
     }),
   ],
