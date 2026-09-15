@@ -21,5 +21,11 @@
   },
   "observability": {
     "enabled": true
-  }
+  },
+  // KV namespace used to remember attendee name -> email address choices a
+  // user has confirmed, so the same name auto-resolves next time instead of
+  // asking again. Scoped per signed-in user inside lib/attendeeAliases.ts.
+  "kv_namespaces": [
+    { "binding": "ATTENDEE_ALIASES", "id": "2b6aa88ed91446fca30a13be5600c376" }
+  ]
 }
