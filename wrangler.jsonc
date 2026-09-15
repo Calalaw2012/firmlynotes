@@ -7,7 +7,7 @@
   // Required by the OpenNext adapter — Next.js's Node.js runtime (used for
   // the API routes and NextAuth in this app) needs Node APIs Workers don't
   // enable by default.
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "enable_nodejs_http_modules"],
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"
