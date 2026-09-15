@@ -82,18 +82,22 @@ export default function AttendeesEditor({
           a.email ? (
             <span
               key={`${a.email}-${i}`}
-              className="inline-flex items-center gap-2 rounded-pill border border-indigo-border bg-indigo-bg py-1.5 pl-3 pr-2 text-xs font-medium text-indigo-text"
-              title={a.email}
+              className="inline-flex flex-col items-start gap-0.5 rounded-pill border border-indigo-border bg-indigo-bg py-1.5 pl-3 pr-2 text-xs font-medium text-indigo-text"
             >
-              {a.name || a.email}
-              <button
-                type="button"
-                onClick={() => remove(i)}
-                className="text-indigo-text/60 hover:text-indigo-text"
-                aria-label={`Remove ${a.name || a.email}`}
-              >
-                ×
-              </button>
+              <span className="flex w-full items-center gap-2">
+                <span className="truncate">{a.name || a.email}</span>
+                <button
+                  type="button"
+                  onClick={() => remove(i)}
+                  className="ml-auto shrink-0 text-indigo-text/60 hover:text-indigo-text"
+                  aria-label={`Remove ${a.name || a.email}`}
+                >
+                  ×
+                </button>
+              </span>
+              {a.name && a.name !== a.email && (
+                <span className="text-[11px] font-normal text-indigo-text/60">{a.email}</span>
+              )}
             </span>
           ) : (
             <span
