@@ -5,9 +5,16 @@ import GoogleProvider from "next-auth/providers/google";
 // Scopes: identify the user, create/edit events on their calendar (including
 // attaching a Google Meet link, which rides along on calendar.events — no
 // extra scope needed for that part), and look up attendees by name from
-// their Google Contacts + "other contacts" (people they've emailed via
-// Gmail but never explicitly saved). All three are Google "sensitive"
-// scopes, not "restricted" — same verification bar as calendar.events alone.
+// their Google Contacts, "other contacts" (people they've emailed via Gmail
+// but never explicitly saved), and the calalaw.com Workspace directory
+// (every colleague at the firm, not just people Peter has personally
+// emailed or saved). All four are Google "sensitive" scopes, not
+// "restricted" — same verification bar as calendar.events alone.
+// directory.readonly also needs the calalaw.com Workspace admin's
+// directory-sharing setting to allow API access (Admin console > Directory
+// > Sharing settings) and the People API's domain directory feature
+// enabled -- until that's confirmed, directory lookups just return no
+// matches rather than breaking anything (see lib/googlePeople.ts).
 const GOOGLE_SCOPES = [
   "openid",
   "email",
@@ -15,6 +22,7 @@ const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/contacts.readonly",
   "https://www.googleapis.com/auth/contacts.other.readonly",
+  "https://www.googleapis.com/auth/directory.readonly",
 ].join(" ");
 
 // Only accounts on this domain may sign in — a law firm's internal tool,
