@@ -7,7 +7,7 @@ import type { Attendee } from "@/types/event";
 interface Suggestion {
   name: string;
   email: string;
-  source: "contacts" | "other";
+  source: "contacts" | "other" | "alias";
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -57,6 +57,18 @@ export default function AttendeesEditor({
     setInputValue("");
     setSuggestions([]);
     setOpen(false);
+
+    // Remember this name -> email choice (fire-and-forget) so future notes
+    // mentioning the same name resolve automatically instead of asking
+    // again. Skip bare "typed the email itself" adds, where there's no
+    // separate name to remember.
+    if (a.name && a.email && a.name !== a.email) {
+      fetch("/api/contacts/alias", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: a.name, email: a.email }),
+      }).catch(() => {});
+    }
   }
 
   function remove(index: number) {
@@ -157,7 +169,14 @@ export default function AttendeesEditor({
                   onClick={() => addAttendee({ name: s.name, email: s.email })}
                   className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-indigo-bg/40"
                 >
-                  <span className="truncate text-ink">{s.name}</span>
+                  <span className="flex items-center gap-1.5 truncate text-ink">
+                    {s.source === "alias" && (
+                      <span title="Remembered from a previous note" className="text-indigo-text">
+                        ★
+                      </span>
+                    )}
+                    <span className="truncate">{s.name}</span>
+                  </span>
                   <span className="shrink-0 truncate text-xs text-ink-faint">{s.email}</span>
                 </button>
               ))}
