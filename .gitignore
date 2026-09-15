@@ -11,3 +11,5 @@ npm-debug.log*
 .DS_Store
 *.tsbuildinfo
 next-env.d.ts
+
+# trigger rebuild: pick up updated Cloudflare build command (npm install)
