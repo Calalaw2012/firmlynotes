@@ -112,8 +112,56 @@ export const authOptions: NextAuthOptions = {
           ...(ALLOWED_EMAIL_DOMAIN ? { hd: ALLOWED_EMAIL_DOMAIN } : {}),
         },
       },
-      token: "https://oauth2.googleapis.com/token",
-      userinfo: "https://openidconnect.googleapis.com/v1/userinfo",
+      // Fixing wellKnown/idToken/issuer above only stopped next-auth's own
+      // *discovery* step from calling Node's https.request(). The next step
+      // in the flow — exchanging Google's authorization code for tokens —
+      // is normally done by openid-client's own client.oauthCallback(),
+      // which makes that HTTP call through openid-client's internal request
+      // machinery, not through fetch. That machinery *also* ends up calling
+      // https.request() under the hood, so sign-in still failed with the
+      // same "[unenv] https.request is not implemented yet!" error, just one
+      // step further into the flow (confirmed via Cloudflare's server logs).
+      // Supplying our own `request()` function here tells next-auth to call
+      // this code directly instead of going through openid-client's client
+      // at all for the token exchange — so it's plain `fetch`, which Workers
+      // supports, all the way through.
+      token: {
+        url: "https://oauth2.googleapis.com/token",
+        async request({ provider, params, checks }) {
+          const body = new URLSearchParams({
+            client_id: provider.clientId,
+            client_secret: provider.clientSecret,
+            code: (params.code as string) ?? "",
+            grant_type: "authorization_code",
+            redirect_uri: provider.callbackUrl,
+          });
+          if (checks.code_verifier) {
+            body.set("code_verifier", checks.code_verifier);
+          }
+
+          const res = await fetch("https://oauth2.googleapis.com/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: body.toString(),
+          });
+
+          const tokens = await res.json();
+          if (!res.ok) throw tokens;
+          return { tokens };
+        },
+      },
+      // Same reasoning as `token` above: a plain fetch to Google's userinfo
+      // endpoint with the access token we just got, instead of letting
+      // openid-client's client.userinfo() make the call.
+      userinfo: {
+        url: "https://openidconnect.googleapis.com/v1/userinfo",
+        async request({ tokens }) {
+          const res = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+            headers: { Authorization: `Bearer ${tokens.access_token}` },
+          });
+          return res.json();
+        },
+      },
       profile(profile) {
         return {
           id: profile.sub,
