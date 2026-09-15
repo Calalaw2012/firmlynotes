@@ -1,18 +1,23 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type { Attendee, ParsedEvent, Reminder } from "@/types/event";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
 
-let client: Anthropic | null = null;
-function getClient(): Anthropic {
+// The @anthropic-ai/sdk client's own HTTP transport (its retry/timeout/
+// AbortController wrapping around fetch) triggers "[unenv] https.request is
+// not implemented yet!" and, once that Workers compat flag is turned on, a
+// second, opaque "Cannot read properties of null (reading 'has')" deep in
+// Cloudflare's Node-http-on-fetch shim -- neither of which is fixable from
+// here. A plain, direct fetch() call (the same approach already used for
+// Google's OAuth token/userinfo endpoints in lib/auth.ts, which works fine
+// in this Workers runtime) sidesteps the SDK's transport entirely.
+function getApiKey(): string {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) {
     throw new Error("ANTHROPIC_API_KEY is not configured.");
   }
-  if (!client) client = new Anthropic({ apiKey });
-  return client;
+  return apiKey;
 }
 
 // Typed loosely (not against Anthropic.Tool) so this file doesn't break if
@@ -151,19 +156,29 @@ export async function parseNoteToEvent(
   // versions, and this route only needs the shapes it reads below.
   let response: { content: Array<{ type: string; input?: Record<string, unknown> }> };
   try {
-    response = (await getClient().messages.create({
-    model: MODEL,
-    max_tokens: 1024,
-    system: buildSystemPrompt(nowLocal, timezone),
-    tools: [EXTRACT_EVENT_TOOL],
-    tool_choice: { type: "tool", name: "extract_event" },
-    messages: [{ role: "user", content: noteText }],
-  } as any)) as { content: Array<{ type: string; input?: Record<string, unknown> }> };
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": getApiKey(),
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 1024,
+        system: buildSystemPrompt(nowLocal, timezone),
+        tools: [EXTRACT_EVENT_TOOL],
+        tool_choice: { type: "tool", name: "extract_event" },
+        messages: [{ role: "user", content: noteText }],
+      }),
+    });
+    const data = (await res.json()) as any;
+    if (!res.ok) {
+      throw new Error(data?.error?.message || `Anthropic API request failed (${res.status}).`);
+    }
+    response = data as { content: Array<{ type: string; input?: Record<string, unknown> }> };
   } catch (err) {
-    const cause = err && typeof err === "object" && "cause" in err ? (err as any).cause : undefined;
-    const causeMessage = cause instanceof Error ? cause.message : cause ? String(cause) : undefined;
-    const baseMessage = err instanceof Error ? err.message : String(err);
-    throw new Error(causeMessage ? baseMessage + " (" + causeMessage + ")" : baseMessage);
+    throw err instanceof Error ? err : new Error(String(err));
   }
 
   const toolUse = response.content.find((block) => block.type === "tool_use");
