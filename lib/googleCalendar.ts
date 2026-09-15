@@ -25,6 +25,18 @@ export async function getGoogleAccessToken(req: NextRequest): Promise<string> {
   return accessToken;
 }
 
+/**
+ * Reads the signed-in user's email server-side from the NextAuth JWT
+ * cookie, for scoping data (like remembered attendee aliases) to this
+ * one user. Returns null if not signed in -- callers should treat that as
+ * "skip the personalization" rather than an error.
+ */
+export async function getUserEmail(req: NextRequest): Promise<string | null> {
+  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+  const email = token?.email;
+  return typeof email === "string" && email ? email.toLowerCase() : null;
+}
+
 /** Adds `days` to a YYYY-MM-DD date string, returning YYYY-MM-DD. */
 function addDays(dateStr: string, days: number): string {
   const [y, m, d] = dateStr.split("-").map(Number);
