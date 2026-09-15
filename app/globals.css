@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #12160f;
+  color: #e9eee6;
+}
+
+::selection {
+  background-color: #262c56;
+  color: #bec7f2;
+}
+
+/* Minimal, quiet scrollbar that fits the dark theme. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: #2a3225;
+  border-radius: 999px;
+  border: 2px solid #12160f;
+}
+
+textarea:focus,
+input:focus,
+select:focus,
+button:focus-visible {
+  outline: none;
+}
+
+.focus-ring:focus-visible {
+  box-shadow: 0 0 0 2px #12160f, 0 0 0 4px #97a3e8;
+}
