@@ -7,10 +7,11 @@ const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
 
 let client: Anthropic | null = null;
 function getClient(): Anthropic {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) {
     throw new Error("ANTHROPIC_API_KEY is not configured.");
   }
-  if (!client) client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  if (!client) client = new Anthropic({ apiKey });
   return client;
 }
 
@@ -148,7 +149,9 @@ export async function parseNoteToEvent(
   // Cast the request/response loosely: the exact exported type names for
   // tool definitions and tool_use blocks have moved between SDK minor
   // versions, and this route only needs the shapes it reads below.
-  const response = (await getClient().messages.create({
+  let response: { content: Array<{ type: string; input?: Record<string, unknown> }> };
+  try {
+    response = (await getClient().messages.create({
     model: MODEL,
     max_tokens: 1024,
     system: buildSystemPrompt(nowLocal, timezone),
@@ -156,6 +159,12 @@ export async function parseNoteToEvent(
     tool_choice: { type: "tool", name: "extract_event" },
     messages: [{ role: "user", content: noteText }],
   } as any)) as { content: Array<{ type: string; input?: Record<string, unknown> }> };
+  } catch (err) {
+    const cause = err && typeof err === "object" && "cause" in err ? (err as any).cause : undefined;
+    const causeMessage = cause instanceof Error ? cause.message : cause ? String(cause) : undefined;
+    const baseMessage = err instanceof Error ? err.message : String(err);
+    throw new Error(causeMessage ? baseMessage + " (" + causeMessage + ")" : baseMessage);
+  }
 
   const toolUse = response.content.find((block) => block.type === "tool_use");
   if (!toolUse || !toolUse.input) {
