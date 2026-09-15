@@ -129,11 +129,11 @@ export const authOptions: NextAuthOptions = {
         url: "https://oauth2.googleapis.com/token",
         async request({ provider, params, checks }) {
           const body = new URLSearchParams({
-            client_id: provider.clientId,
-            client_secret: provider.clientSecret,
+            client_id: provider.clientId ?? "",
+            client_secret: provider.clientSecret ?? "",
             code: (params.code as string) ?? "",
             grant_type: "authorization_code",
-            redirect_uri: provider.callbackUrl,
+            redirect_uri: provider.callbackUrl ?? "",
           });
           if (checks.code_verifier) {
             body.set("code_verifier", checks.code_verifier);
