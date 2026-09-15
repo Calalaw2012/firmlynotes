@@ -75,12 +75,24 @@ export const authOptions: NextAuthOptions = {
       // .well-known/openid-configuration discovery fetch through the
       // `openid-client` library). That library issues the request with
       // Node's raw `https.request()`, which Cloudflare Workers' nodejs_compat
-      // layer does not implement ("[unenv] https.request is not implemented
-      // yet!") — it throws before the user ever reaches Google's sign-in
+      // layer does not implement "[unenv] https.request is not implemented
+      // yet!" — it throws before the user ever reaches Google's sign-in
       // page. Setting `wellKnown: undefined` and supplying Google's (stable,
       // published) endpoints directly skips discovery entirely, so the
       // provider only ever uses ordinary `fetch`, which Workers supports.
       wellKnown: undefined,
+      // The Google provider preset also defaults to `idToken: true`, which
+      // tells next-auth to cryptographically verify the id_token Google
+      // returns (via openid-client's `client.callback()`). That verification
+      // needs an `issuer` (and a JWKS endpoint) that normally comes from the
+      // `wellKnown` discovery document we just skipped — without it,
+      // openid-client throws "issuer must be configured on the issuer" the
+      // moment Google redirects back. We don't need that verification: the
+      // `userinfo` endpoint below (a plain `fetch` call) already gets us the
+      // user's verified profile straight from Google over HTTPS, which is
+      // exactly what `profile()` maps below. Turning it off skips the
+      // id_token check entirely and uses the userinfo endpoint instead.
+      idToken: false,
       authorization: {
         url: "https://accounts.google.com/o/oauth2/v2/auth",
         params: {
