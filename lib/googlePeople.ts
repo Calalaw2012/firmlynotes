@@ -102,8 +102,18 @@ export async function searchGoogleContacts(
     }
   }
 
+  // Match every word of the query independently (order-agnostic), rather
+  // than requiring the whole query as one contiguous substring. A note
+  // written as "John McDermott" should still find a contact saved as
+  // "McDermott, John" or with a middle name -- a single combined substring
+  // check misses those.
+  const qWords = q.split(/\s+/).filter(Boolean);
+
   return Array.from(byEmail.values())
-    .filter((c) => c.name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q))
+    .filter((c) => {
+      const haystack = `${c.name.toLowerCase()} ${c.email.toLowerCase()}`;
+      return qWords.every((w) => haystack.includes(w));
+    })
     .sort((a, b) => {
       const aStarts = a.name.toLowerCase().startsWith(q) ? 0 : 1;
       const bStarts = b.name.toLowerCase().startsWith(q) ? 0 : 1;
