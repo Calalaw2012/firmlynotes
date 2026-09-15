@@ -41,8 +41,24 @@ async function resolveAttendees(attendees: Attendee[]): Promise<Attendee[]> {
         const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(a.name)}`);
         if (!res.ok) return a;
         const data = await res.json();
-        const match = Array.isArray(data.matches) ? data.matches[0] : null;
-        return match ? { name: match.name, email: match.email } : a;
+        const matches = Array.isArray(data.matches) ? data.matches : [];
+
+        // A remembered alias for this exact name is a confident match --
+        // auto-resolve even if the name also loosely matches other
+        // contacts in the fallback list below.
+        if (data.aliasEmail) {
+          const aliased = matches.find(
+            (m: { email: string }) => m.email === data.aliasEmail
+          );
+          return { name: aliased?.name || a.name, email: data.aliasEmail };
+        }
+
+        // Otherwise only auto-resolve when there's exactly one candidate --
+        // guessing among several people who share a first name is worse
+        // than leaving it for the user to pick.
+        return matches.length === 1
+          ? { name: matches[0].name, email: matches[0].email }
+          : a;
       } catch {
         return a;
       }
