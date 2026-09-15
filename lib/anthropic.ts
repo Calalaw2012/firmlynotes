@@ -71,7 +71,7 @@ const EXTRACT_EVENT_TOOL = {
       attendees: {
         type: "array",
         description:
-          "People to invite, extracted from phrases like 'with Sarah', 'invite the Hendricks', 'cc opposing counsel'. Do not include the note-taker themselves.",
+          "People to actually invite to the event -- extracted ONLY from phrases that clearly show participation, like 'with Sarah', 'invite the Hendricks', 'cc opposing counsel', 'meet with John'. A person's name showing up elsewhere in the note -- as part of a case/matter name, party name, or subject line (e.g. 'Smith v. Jones', 'the Dillon matter', 're: Johnson deposition') -- is NOT by itself a reason to add them as an attendee. Only add someone if the note separately indicates they are attending, being invited, or cc'd. Do not include the note-taker themselves.",
         items: {
           type: "object",
           properties: {
@@ -123,7 +123,7 @@ Rules:
 - Title should be short and human-friendly (e.g. "Deposition prep with Sarah"), not the raw note text.
 - Default event length is 60 minutes when no end time or duration is given.
 - Default reminder is one popup 30 minutes before, unless the note specifies reminder timing or method (e.g. "email me a day before", "remind me an hour ahead", "no reminder" -> empty reminders array).
-- Attendees: pull out people the note says to meet with, invite, or cc — not the note-taker. Only fill in an email if the note literally contains one; otherwise leave email as "" and put their name in "name" exactly as written (e.g. "Sarah", "the Hendricks", "opposing counsel on Mercer") — a name-only attendee gets matched against the user's contacts afterward, so don't guess or fabricate an address.
+- Attendees: pull out people the note says to meet with, invite, or cc — not the note-taker. A name is only an attendee if the note says that person is participating, invited, or cc'd -- a name that appears merely as part of a case/matter name, party name, or subject reference (e.g. "Smith v. Jones", "the Dillon matter", "re: Johnson deposition", a case caption, a docket title) is NOT an attendee unless the note separately says that person is attending or should be invited. When in doubt, leave them out rather than guessing. Only fill in an email if the note literally contains one; otherwise leave email as "" and put their name in "name" exactly as written (e.g. "Sarah", "the Hendricks", "opposing counsel on Mercer") — a name-only attendee gets matched against the user's contacts afterward, so don't guess or fabricate an address.
 - addGoogleMeet is true only for an explicitly virtual/video meeting. A note that just says "meeting" or "call" with no virtual cue should leave it false.
 - If the note genuinely gives no usable date/time, set date to today (${nowLocal.slice(0, 10)}) and allDay to true, and explain in clarificationNeeded that no date or time was found so the user should check it.
 - Always call the extract_event tool exactly once with your result. Do not respond in plain text.`;
