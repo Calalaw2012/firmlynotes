@@ -248,3 +248,73 @@ export async function parseNoteToEvent(
         : null,
   };
 }
+
+const TAG_SENTENCES_TOOL = {
+  name: "tag_sentences",
+  description:
+    "Identify which of the numbered sentences describe a specific scheduling instruction that should become a calendar event.",
+  input_schema: {
+    type: "object",
+    properties: {
+      calendarIndices: {
+        type: "array",
+        description:
+          "0-based indices into the numbered sentence list, in any order, for every sentence that is part of a scheduling instruction: a meeting, call, deadline, or appointment with a clear time reference or scheduling intent (a date, day, time of day, or phrase like 'tomorrow', 'next week', 'by Friday'). Usually zero or one index. Include more than one only when the scheduling detail genuinely spans multiple adjacent sentences (e.g. one sentence names who and where, the next gives the time). A name appearing only as part of a case or matter reference is not by itself a scheduling instruction. Empty array if no sentence describes anything schedulable.",
+        items: { type: "integer" },
+      },
+    },
+    required: ["calendarIndices"],
+  },
+};
+
+function buildTagSystemPrompt(): string {
+  return `You are given a note broken into numbered sentences (0-indexed). Find the sentence(s) that describe a specific meeting, call, deadline, or appointment worth putting on a calendar -- something with a date, day, time, or clear scheduling intent. Sentences that are just background, case notes, or to-dos with no scheduling detail are not calendar sentences. Call the tag_sentences tool exactly once with your result. When nothing in the note is schedulable, return an empty array -- don't guess.`;
+}
+
+/**
+ * Lightweight companion to parseNoteToEvent: given a note already split
+ * into sentences, flags which ones look like the scheduling instruction so
+ * the composer can pre-highlight them before the user taps "Process Note".
+ * Kept as a separate, smaller tool call rather than reusing extract_event
+ * so it stays fast enough to run automatically while the user is typing.
+ */
+export async function tagCalendarSentences(sentences: string[]): Promise<number[]> {
+  if (sentences.length === 0) return [];
+
+  const numbered = sentences.map((s, i) => `${i}: ${s}`).join("\n");
+
+  let response: { content: Array<{ type: string; input?: Record<string, unknown> }> };
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": getApiKey(),
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 256,
+        system: buildTagSystemPrompt(),
+        tools: [TAG_SENTENCES_TOOL],
+        tool_choice: { type: "tool", name: "tag_sentences" },
+        messages: [{ role: "user", content: numbered }],
+      }),
+    });
+    const data = (await res.json()) as any;
+    if (!res.ok) {
+      throw new Error(data?.error?.message || `Anthropic API request failed (${res.status}).`);
+    }
+    response = data as { content: Array<{ type: string; input?: Record<string, unknown> }> };
+  } catch (err) {
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+
+  const toolUse = response.content.find((block) => block.type === "tool_use");
+  const raw = toolUse?.input?.calendarIndices;
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .filter((n): n is number => typeof n === "number" && Number.isInteger(n))
+    .filter((n) => n >= 0 && n < sentences.length);
+}
