@@ -91,7 +91,7 @@ export default function Home() {
     window.history.replaceState({}, "", window.location.pathname);
   }, []);
 
-  async function handleParse() {
+  async function handleParse(calendarText: string) {
     setError(null);
     setPhase("parsing");
     try {
@@ -99,7 +99,7 @@ export default function Home() {
       const res = await fetch("/api/parse-note", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: noteText, timezone, nowISO: new Date().toISOString() }),
+        body: JSON.stringify({ text: calendarText, timezone, nowISO: new Date().toISOString() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Couldn't read that note.");
