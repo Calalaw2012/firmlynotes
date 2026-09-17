@@ -1,7 +1,7 @@
 "use client";
 
-import type { ParsedEvent } from "@/types/event";
-import RemindersEditor from "./RemindersEditor";
+import { useState } from "react";
+import type { ParsedEvent, Reminder } from "@/types/event";
 import AttendeesEditor from "./AttendeesEditor";
 import Banner from "./Banner";
 
@@ -9,6 +9,267 @@ const inputClasses =
   "w-full rounded-lg border border-border bg-bg-sunken px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus-ring";
 
 export type EventCardStatus = "draft" | "creating" | "sent" | "error";
+
+// -- Time field: a single click-to-edit range picker (replaces the old
+// All-day checkbox + always-visible Start/End boxes), per the approved
+// mockup. Duration is no longer its own editable field -- it's a read-only
+// caption computed from Start/End, changed only by editing End (or Start,
+// which just moves the whole range and leaves the length alone).
+
+function formatTimeDisplay(hhmm: string): string {
+  const [hStr, mStr] = hhmm.split(":");
+  let h = parseInt(hStr, 10);
+  const ampm = h >= 12 ? "pm" : "am";
+  h = h % 12;
+  if (h === 0) h = 12;
+  return mStr === "00" ? `${h}${ampm}` : `${h}:${mStr}${ampm}`;
+}
+
+function minutesBetween(start: string, end: string): number {
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  let diff = eh * 60 + em - (sh * 60 + sm);
+  if (diff <= 0) diff += 24 * 60; // end reads as the next day (e.g. 11pm - 1am)
+  return diff;
+}
+
+function formatDuration(totalMinutes: number): string {
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+  if (hours) parts.push(`${hours} ${hours === 1 ? "hour" : "hours"}`);
+  if (minutes || !hours) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
+  return parts.join(" and ");
+}
+
+function TimeField({
+  event,
+  disabled,
+  onChange,
+}: {
+  event: ParsedEvent;
+  disabled: boolean;
+  onChange: (patch: Pick<ParsedEvent, "allDay" | "startTime" | "endTime">) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draftAllDay, setDraftAllDay] = useState(event.allDay);
+  const [draftStart, setDraftStart] = useState(event.startTime ?? "09:00");
+  const [draftEnd, setDraftEnd] = useState(event.endTime ?? "10:00");
+
+  function openEditor() {
+    if (disabled) return;
+    setDraftAllDay(event.allDay);
+    setDraftStart(event.startTime ?? "09:00");
+    setDraftEnd(event.endTime ?? "10:00");
+    setEditing(true);
+  }
+
+  function commit() {
+    setEditing(false);
+    if (draftAllDay) {
+      onChange({ allDay: true, startTime: null, endTime: null });
+    } else {
+      onChange({ allDay: false, startTime: draftStart, endTime: draftEnd || draftStart });
+    }
+  }
+
+  const displayText = event.allDay
+    ? "All day"
+    : event.startTime && event.endTime
+    ? `${formatTimeDisplay(event.startTime)} – ${formatTimeDisplay(event.endTime)}`
+    : null;
+
+  const durationCaption =
+    !event.allDay && event.startTime && event.endTime
+      ? formatDuration(minutesBetween(event.startTime, event.endTime))
+      : "";
+
+  if (!editing) {
+    return (
+      <div>
+        <button type="button" onClick={openEditor} disabled={disabled} className={`${inputClasses} text-left`}>
+          {displayText ?? <span className="text-ink-faint">Choose time…</span>}
+        </button>
+        {durationCaption && <p className="mt-1 px-1 text-xs text-ink-faint">{durationCaption}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="space-y-2 rounded-lg border border-indigo-border bg-bg-sunken p-2.5"
+      onBlur={(e) => {
+        // Commit only once focus actually leaves this whole editor block,
+        // not on every individual input blurring to the next one inside it.
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) commit();
+      }}
+    >
+      <label className="flex items-center gap-2 text-xs text-ink-muted">
+        <input
+          type="checkbox"
+          className="h-3.5 w-3.5 rounded border-border bg-bg-sunken accent-indigo-solid"
+          checked={draftAllDay}
+          onChange={(e) => setDraftAllDay(e.target.checked)}
+        />
+        All day
+      </label>
+      {!draftAllDay && (
+        <div className="flex gap-2">
+          <label className="flex-1 text-[10px] uppercase tracking-wide text-ink-faint">
+            Start
+            <input
+              type="time"
+              className={`${inputClasses} mt-1`}
+              value={draftStart}
+              onChange={(e) => setDraftStart(e.target.value)}
+              autoFocus
+            />
+          </label>
+          <label className="flex-1 text-[10px] uppercase tracking-wide text-ink-faint">
+            End
+            <input
+              type="time"
+              className={`${inputClasses} mt-1`}
+              value={draftEnd}
+              onChange={(e) => setDraftEnd(e.target.value)}
+            />
+          </label>
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={commit}
+        className="text-xs font-medium text-indigo-text hover:underline"
+      >
+        Done
+      </button>
+    </div>
+  );
+}
+
+// -- Reminder: a single preset dropdown (replaces the old multi-reminder,
+// popup/email-toggling editor), per the approved mockup. Still stored as a
+// Reminder[] under the hood (always length 0 or 1) so the API contract and
+// Google Calendar integration don't need to change.
+
+const REMINDER_PRESETS: { label: string; minutesBefore: number | null }[] = [
+  { label: "None", minutesBefore: null },
+  { label: "At time of event", minutesBefore: 0 },
+  { label: "5 minutes before", minutesBefore: 5 },
+  { label: "10 minutes before", minutesBefore: 10 },
+  { label: "15 minutes before", minutesBefore: 15 },
+  { label: "30 minutes before", minutesBefore: 30 },
+  { label: "1 hour before", minutesBefore: 60 },
+  { label: "2 hours before", minutesBefore: 120 },
+  { label: "1 day before", minutesBefore: 1440 },
+  { label: "2 days before", minutesBefore: 2880 },
+];
+
+function reminderLabelFor(reminders: Reminder[]): string {
+  if (reminders.length === 0) return "None";
+  const minutesBefore = reminders[0].minutesBefore;
+  const preset = REMINDER_PRESETS.find((p) => p.minutesBefore === minutesBefore);
+  if (preset) return preset.label;
+  return minutesBefore % 60 === 0 ? `${minutesBefore / 60} hr before` : `${minutesBefore} min before`;
+}
+
+function ReminderPicker({
+  reminders,
+  disabled,
+  onChange,
+}: {
+  reminders: Reminder[];
+  disabled: boolean;
+  onChange: (reminders: Reminder[]) => void;
+}) {
+  const currentLabel = reminderLabelFor(reminders);
+  const knownLabels = new Set(REMINDER_PRESETS.map((p) => p.label));
+
+  return (
+    <select
+      className={inputClasses}
+      disabled={disabled}
+      value={currentLabel}
+      onChange={(e) => {
+        const preset = REMINDER_PRESETS.find((p) => p.label === e.target.value);
+        if (!preset) return;
+        onChange(preset.minutesBefore === null ? [] : [{ method: "popup", minutesBefore: preset.minutesBefore }]);
+      }}
+    >
+      {REMINDER_PRESETS.map((p) => (
+        <option key={p.label} value={p.label}>
+          {p.label}
+        </option>
+      ))}
+      {!knownLabels.has(currentLabel) && <option value={currentLabel}>{currentLabel}</option>}
+    </select>
+  );
+}
+
+// -- Video details: shown once the event is actually sent and Google
+// returned a Meet link. Phone dial-in + PIN only render when the Workspace
+// happens to provision one -- most don't, and there's no way to know before
+// the event is created, so (unlike the mockup, which fakes a link the
+// instant the checkbox is checked) this only ever shows real data, after a
+// real send.
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard access can be blocked (permissions, non-secure context);
+      // the button just won't flash "Copied" in that case.
+      return;
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className={`shrink-0 rounded-md border px-2.5 py-1 text-xs transition-colors ${
+        copied ? "border-success text-success" : "border-border text-ink-muted hover:text-ink"
+      }`}
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+function VideoDetails({
+  meetLink,
+  meetPhone,
+  meetPin,
+}: {
+  meetLink: string;
+  meetPhone: string | null;
+  meetPin: string | null;
+}) {
+  return (
+    <div className="space-y-2 rounded-lg border border-border bg-bg-sunken p-3">
+      <div className="flex items-center gap-3">
+        <span className="w-16 shrink-0 text-[10px] uppercase tracking-wide text-ink-faint">Video link</span>
+        <span className="flex-1 truncate text-xs text-ink">{meetLink}</span>
+        <CopyButton text={meetLink} />
+      </div>
+      {meetPhone && (
+        <div className="flex items-center gap-3">
+          <span className="w-16 shrink-0 text-[10px] uppercase tracking-wide text-ink-faint">Dial-in</span>
+          <span className="flex-1 truncate text-xs text-ink">
+            {meetPhone}
+            {meetPin ? ` · PIN ${meetPin}` : ""}
+          </span>
+          <CopyButton text={meetPin ? `${meetPhone}, PIN: ${meetPin}` : meetPhone} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * One independently-editable, independently-sendable event card. This is
@@ -23,6 +284,8 @@ export default function EventCard({
   status,
   error,
   meetLink,
+  meetPhone,
+  meetPin,
   htmlLink,
   onChange,
   onSend,
@@ -32,6 +295,8 @@ export default function EventCard({
   status: EventCardStatus;
   error: string | null;
   meetLink: string | null;
+  meetPhone: string | null;
+  meetPin: string | null;
   htmlLink: string | null;
   onChange: (event: ParsedEvent) => void;
   onSend: () => void;
@@ -53,14 +318,6 @@ export default function EventCard({
       {sent ? (
         <Banner variant="success">
           Added to your calendar.
-          {meetLink && (
-            <>
-              {" "}
-              <a href={meetLink} target="_blank" rel="noreferrer" className="underline underline-offset-4">
-                Join the Meet
-              </a>
-            </>
-          )}
           {htmlLink && (
             <>
               {" "}
@@ -102,8 +359,8 @@ export default function EventCard({
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-          <div className="col-span-2">
+        <div className="grid grid-cols-2 gap-4">
+          <div>
             <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
               Date
             </label>
@@ -114,51 +371,16 @@ export default function EventCard({
               onChange={(e) => set("date", e.target.value)}
             />
           </div>
-          <div className="col-span-2 flex items-end gap-2 pb-2">
-            <label className="inline-flex items-center gap-2 text-sm text-ink-muted">
-              <input
-                type="checkbox"
-                className="h-4 w-4 rounded border-border bg-bg-sunken accent-indigo-solid"
-                checked={event.allDay}
-                onChange={(e) => {
-                  const allDay = e.target.checked;
-                  if (!allDay && !event.startTime) {
-                    onChange({ ...event, allDay, startTime: "09:00", endTime: "10:00" });
-                  } else {
-                    set("allDay", allDay);
-                  }
-                }}
-              />
-              All-day
+          <div>
+            <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
+              Time
             </label>
+            <TimeField
+              event={event}
+              disabled={sent || sending}
+              onChange={(patch) => onChange({ ...event, ...patch })}
+            />
           </div>
-
-          {!event.allDay && (
-            <>
-              <div>
-                <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
-                  Start
-                </label>
-                <input
-                  type="time"
-                  className={inputClasses}
-                  value={event.startTime ?? ""}
-                  onChange={(e) => set("startTime", e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
-                  End
-                </label>
-                <input
-                  type="time"
-                  className={inputClasses}
-                  value={event.endTime ?? ""}
-                  onChange={(e) => set("endTime", e.target.value)}
-                />
-              </div>
-            </>
-          )}
         </div>
 
         <div>
@@ -180,23 +402,33 @@ export default function EventCard({
           <AttendeesEditor attendees={event.attendees} onChange={(a) => set("attendees", a)} />
         </div>
 
-        <label className="flex items-center gap-2.5 text-sm text-ink-muted">
-          <input
-            type="checkbox"
-            className="h-4 w-4 rounded border-border bg-bg-sunken accent-indigo-solid"
-            checked={event.addGoogleMeet}
-            onChange={(e) => set("addGoogleMeet", e.target.checked)}
-          />
-          Add a Google Meet video call
-        </label>
+        <div>
+          <label className="mb-1.5 flex items-center gap-2.5 text-sm text-ink-muted">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-border bg-bg-sunken accent-indigo-solid"
+              checked={event.addGoogleMeet}
+              onChange={(e) => set("addGoogleMeet", e.target.checked)}
+            />
+            Add video link and conference call number
+          </label>
+          {!sent && event.addGoogleMeet && (
+            <p className="pl-6 text-xs text-ink-faint">
+              Google generates the link (and a dial-in number, if your Workspace provides one) once this
+              event is actually created — shown here right after you send it.
+            </p>
+          )}
+        </div>
 
         <div>
           <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
-            Reminders
+            Reminder
           </label>
-          <RemindersEditor reminders={event.reminders} onChange={(r) => set("reminders", r)} />
+          <ReminderPicker reminders={event.reminders} disabled={sent || sending} onChange={(r) => set("reminders", r)} />
         </div>
       </fieldset>
+
+      {sent && meetLink && <VideoDetails meetLink={meetLink} meetPhone={meetPhone} meetPin={meetPin} />}
 
       {!sent && (
         <div className="flex items-center gap-3 pt-1">
