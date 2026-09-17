@@ -49,4 +49,13 @@ export interface CreatedEvent {
   htmlLink: string;
   id: string;
   meetLink: string | null;
+  /**
+   * Dial-in phone number and PIN for the created Meet conference, when
+   * Google's response includes them -- only present when the signed-in
+   * Workspace's calling plan actually provisions phone dial-in for Meet.
+   * Null (not an error) when there's no video conference on the event, or
+   * when there is one but the Workspace has no telephony entry point.
+   */
+  meetPhone: string | null;
+  meetPin: string | null;
 }
