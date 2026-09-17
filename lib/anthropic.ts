@@ -145,7 +145,7 @@ Rules:
 
 Default scheduling when the note doesn't give an explicit clock time for an event (this decides allDay/startTime/endTime together -- apply exactly one of these three cases):
 1. No time information of any kind (no clock time, no "morning"/"afternoon"/"evening"/"night") -- set allDay true, leave startTime/endTime empty.
-2. An explicit clock time is given (e.g. "3pm", "10:30am") -- set allDay false, startTime to that time, and endTime to whatever duration the note states, or 60 minutes after startTime if no duration is given.
+2. An explicit clock time is given (e.g. "3pm", "10:30am") -- set allDay false, startTime to that time, and endTime to whatever duration the note states, or 60 minutes after startTime if no duration is given. A duration written as a decimal number of hours (e.g. "1.25hrs", "1.5 hours", ".75 hr") means the fractional part of an hour, not minutes -- convert it precisely (fraction x 60, rounded to the nearest minute): 1.25 hours is 1 hour 15 minutes, 1.5 hours is 1 hour 30 minutes, 0.75 hours is 45 minutes. Never read "1.25hrs" as "1 hour 25 minutes".
 3. Only a loose part-of-day word is given, no clock time -- set allDay false and use its default start/end window: "morning" -> 09:00-11:59, "afternoon" -> 12:00-16:59, "evening" or "night" -> 17:00-20:00. An explicit duration elsewhere in the note (e.g. "morning meeting, 2 hours") overrides only the window's length, keeping its start time.
 - Always call the extract_events tool exactly once with your result. Do not respond in plain text.`;
 }
