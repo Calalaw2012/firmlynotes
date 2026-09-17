@@ -20,114 +20,128 @@ function getApiKey(): string {
   return apiKey;
 }
 
+const EVENT_ITEM_SCHEMA = {
+  type: "object",
+  properties: {
+    title: {
+      type: "string",
+      description: "A short, calendar-friendly event title (a few words, not the whole note).",
+    },
+    description: {
+      type: "string",
+      description:
+        "Any substantive detail from the note beyond what the other fields already capture -- e.g. an agenda item, case/matter reference, location, or instruction. Never restate the title, date/time, duration, attendee list, reminder timing, or video-call/Meet setup as description text -- those already have their own fields, and repeating them is not real content. Write it as natural, complete sentences, not restated fragments. Empty string if the note says nothing beyond what the other fields cover.",
+    },
+    date: {
+      type: "string",
+      description: "This event's date resolved to an absolute calendar date, formatted YYYY-MM-DD.",
+    },
+    allDay: {
+      type: "boolean",
+      description: "True only if the note clearly describes an all-day item with no specific time.",
+    },
+    startTime: {
+      type: "string",
+      description: "24-hour HH:MM start time, local to the user's timezone. Omit/empty if allDay is true.",
+    },
+    endTime: {
+      type: "string",
+      description:
+        "24-hour HH:MM end time, local to the user's timezone. If the note gives a duration instead of an end time, compute it from startTime. Default to 60 minutes after startTime if nothing indicates duration. Omit/empty if allDay is true.",
+    },
+    reminders: {
+      type: "array",
+      description:
+        "Reminders to set for this event. If the note specifies none, default to a single popup reminder 30 minutes before.",
+      items: {
+        type: "object",
+        properties: {
+          method: { type: "string", enum: ["popup", "email"] },
+          minutesBefore: { type: "number" },
+        },
+        required: ["method", "minutesBefore"],
+      },
+    },
+    attendees: {
+      type: "array",
+      description:
+        "People to actually invite to this event -- extracted ONLY from phrases that clearly show participation, like 'with Sarah', 'invite the Hendricks', 'cc opposing counsel', 'meet with John', 'Monica and Peter to attend', 'attendees: Monica, Peter', 'X and Y will be there'. A person's name showing up elsewhere in the note -- as part of a case/matter name, party name, or subject line (e.g. 'Smith v. Jones', 'the Dillon matter', 're: Johnson deposition') -- is NOT by itself a reason to add them as an attendee. Only add someone if the note separately indicates they are attending, being invited, or cc'd. Do not include the note-taker themselves.",
+      items: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "Their name as written in the note. If only an email was given, repeat the email here.",
+          },
+          email: {
+            type: "string",
+            description:
+              "Their email address, ONLY if the note itself contains it verbatim. Empty string if the note gives just a name — do not invent or guess an email address.",
+          },
+        },
+        required: ["name", "email"],
+      },
+    },
+    addGoogleMeet: {
+      type: "boolean",
+      description:
+        "True only if the note clearly asks for a virtual/video meeting for this event (e.g. 'video call', 'Google Meet', 'Zoom', 'dial in', 'virtual', 'remote meeting'). False for in-person meetings or when it's not mentioned.",
+    },
+    clarificationNeeded: {
+      type: ["string", "null"],
+      description:
+        "One short sentence flagging anything you guessed or couldn't find for this event (e.g. no date mentioned, ambiguous time, an attendee's email wasn't in the note). Null if this event was unambiguous.",
+    },
+  },
+  required: [
+    "title",
+    "description",
+    "date",
+    "allDay",
+    "reminders",
+    "attendees",
+    "addGoogleMeet",
+    "clarificationNeeded",
+  ],
+};
+
 // Typed loosely (not against Anthropic.Tool) so this file doesn't break if
 // the SDK's exported type names shift between versions.
-const EXTRACT_EVENT_TOOL = {
-  name: "extract_event",
+const EXTRACT_EVENTS_TOOL = {
+  name: "extract_events",
   description:
-    "Record the calendar event extracted from the user's note, using the exact schema fields provided.",
+    "Record every distinct calendar event described in the user's note, using the exact schema fields provided for each one.",
   input_schema: {
     type: "object",
     properties: {
-      title: {
-        type: "string",
-        description: "A short, calendar-friendly event title (a few words, not the whole note).",
-      },
-      description: {
-        type: "string",
-        description:
-          "Any substantive detail from the note beyond the title, date/time, and attendee list -- e.g. an agenda item, case/matter reference, location, or instruction. Never restate who is attending or invent filler like 'call scheduled with X' or 'meeting with X' -- the title and attendee list already cover that, and repeating it is not real content. Empty string if the note says nothing beyond who/when.",
-      },
-      date: {
-        type: "string",
-        description: "Event date resolved to an absolute calendar date, formatted YYYY-MM-DD.",
-      },
-      allDay: {
-        type: "boolean",
-        description: "True only if the note clearly describes an all-day item with no specific time.",
-      },
-      startTime: {
-        type: "string",
-        description: "24-hour HH:MM start time, local to the user's timezone. Omit/empty if allDay is true.",
-      },
-      endTime: {
-        type: "string",
-        description:
-          "24-hour HH:MM end time, local to the user's timezone. If the note gives a duration instead of an end time, compute it from startTime. Default to 60 minutes after startTime if nothing indicates duration. Omit/empty if allDay is true.",
-      },
-      reminders: {
+      events: {
         type: "array",
         description:
-          "Reminders to set. If the note specifies none, default to a single popup reminder 30 minutes before.",
-        items: {
-          type: "object",
-          properties: {
-            method: { type: "string", enum: ["popup", "email"] },
-            minutesBefore: { type: "number" },
-          },
-          required: ["method", "minutesBefore"],
-        },
-      },
-      attendees: {
-        type: "array",
-        description:
-          "People to actually invite to the event -- extracted ONLY from phrases that clearly show participation, like 'with Sarah', 'invite the Hendricks', 'cc opposing counsel', 'meet with John', 'Monica and Peter to attend', 'attendees: Monica, Peter', 'X and Y will be there'. A person's name showing up elsewhere in the note -- as part of a case/matter name, party name, or subject line (e.g. 'Smith v. Jones', 'the Dillon matter', 're: Johnson deposition') -- is NOT by itself a reason to add them as an attendee. Only add someone if the note separately indicates they are attending, being invited, or cc'd. Do not include the note-taker themselves.",
-        items: {
-          type: "object",
-          properties: {
-            name: {
-              type: "string",
-              description: "Their name as written in the note. If only an email was given, repeat the email here.",
-            },
-            email: {
-              type: "string",
-              description:
-                "Their email address, ONLY if the note itself contains it verbatim. Empty string if the note gives just a name — do not invent or guess an email address.",
-            },
-          },
-          required: ["name", "email"],
-        },
-      },
-      addGoogleMeet: {
-        type: "boolean",
-        description:
-          "True only if the note clearly asks for a virtual/video meeting (e.g. 'video call', 'Google Meet', 'Zoom', 'dial in', 'virtual', 'remote meeting'). False for in-person meetings or when it's not mentioned.",
-      },
-      clarificationNeeded: {
-        type: ["string", "null"],
-        description:
-          "One short sentence flagging anything you guessed or couldn't find (e.g. no date mentioned, ambiguous time, an attendee's email wasn't in the note). Null if the note was unambiguous.",
+          "One entry per distinct schedulable item in the note -- a meeting, call, deposition, deadline, or appointment, each with its own title/date/time/attendees/reminders. A note that only contains background, case notes, or to-dos with no scheduling detail should return an empty array -- don't invent an event to fill it.",
+        items: EVENT_ITEM_SCHEMA,
       },
     },
-    required: [
-      "title",
-      "description",
-      "date",
-      "allDay",
-      "reminders",
-      "attendees",
-      "addGoogleMeet",
-      "clarificationNeeded",
-    ],
+    required: ["events"],
   },
 };
 
 function buildSystemPrompt(nowLocal: string, timezone: string): string {
-  return `You turn a short, informally-written note into a single calendar event.
+  return `You turn a short, informally-written note into every distinct calendar event it describes.
 
 The user's current local date and time is: ${nowLocal} (timezone: ${timezone}).
 Resolve all relative dates/times ("tomorrow", "next Thursday", "in two weeks", "eod", "lunchtime") against that moment, in that timezone. If a mentioned time of day has already passed today, assume the user means the next occurrence of that day/time, not today, unless the note clearly says "today".
 
 Rules:
-- Extract exactly one event. If the note lists multiple, use the first/primary one and mention the rest in "description".
-- Title should be short and human-friendly (e.g. "Deposition prep with Sarah"), not the raw note text.
-- description must add real information beyond the title and attendee list -- never restate "call/meeting with X" as description text just because someone was named as an attendee. If the note has nothing further (no agenda, case reference, location, or other detail beyond who and when), leave description as an empty string.
+- Return one array entry per distinct schedulable item in the note -- a meeting, call, deposition, deadline, or appointment. A note describing several separate things (e.g. a morning meeting and an unrelated afternoon call) should produce one entry per thing, not one entry that mentions the rest in its description.
+- Return an empty array if nothing in the note is schedulable -- don't force a placeholder event just to have something to return.
+- Each event's title should be short and human-friendly (e.g. "Deposition prep with Sarah"), not the raw note text.
+- Each event's description must add real information beyond what its own title, date/time, duration, attendees, reminders, and video-call/Meet setup already say -- never restate "call/meeting with X" as description text just because someone was named as an attendee, and never restate the time or reminder timing in prose. If the note has nothing further for that event (no agenda, case reference, location, or other detail), leave description as an empty string. Write real description text as natural, complete sentences, not restated fragments of the note.
 - Default event length is 60 minutes when no end time or duration is given.
-- Default reminder is one popup 30 minutes before, unless the note specifies reminder timing or method (e.g. "email me a day before", "remind me an hour ahead", "no reminder" -> empty reminders array).
-- Attendees: pull out people the note says to meet with, invite, cc, or have attend -- including phrasing like "X to attend", "attendees: X, Y", or "X and Y will be there", not just "with X" -- not the note-taker. A name is only an attendee if the note says that person is participating, invited, cc'd, or attending -- a name that appears merely as part of a case/matter name, party name, or subject reference (e.g. "Smith v. Jones", "the Dillon matter", "re: Johnson deposition", a case caption, a docket title) is NOT an attendee unless the note separately says that person is attending or should be invited. When in doubt, leave them out rather than guessing. Only fill in an email if the note literally contains one; otherwise leave email as "" and put their name in "name" exactly as written (e.g. "Sarah", "the Hendricks", "opposing counsel on Mercer") — a name-only attendee gets matched against the user's contacts afterward, so don't guess or fabricate an address.
+- Default reminder is one popup 30 minutes before, unless the note specifies reminder timing or method for that event (e.g. "email me a day before", "remind me an hour ahead", "no reminder" -> empty reminders array).
+- Attendees: pull out people the note says to meet with, invite, cc, or have attend for that specific event -- including phrasing like "X to attend", "attendees: X, Y", or "X and Y will be there", not just "with X" -- not the note-taker. A name is only an attendee if the note says that person is participating, invited, cc'd, or attending -- a name that appears merely as part of a case/matter name, party name, or subject reference (e.g. "Smith v. Jones", "the Dillon matter", "re: Johnson deposition", a case caption, a docket title) is NOT an attendee unless the note separately says that person is attending or should be invited. When in doubt, leave them out rather than guessing. Only fill in an email if the note literally contains one; otherwise leave email as "" and put their name in "name" exactly as written (e.g. "Sarah", "the Hendricks", "opposing counsel on Mercer") — a name-only attendee gets matched against the user's contacts afterward, so don't guess or fabricate an address.
 - addGoogleMeet is true only for an explicitly virtual/video meeting. A note that just says "meeting" or "call" with no virtual cue should leave it false.
-- If the note genuinely gives no usable date/time, set date to today (${nowLocal.slice(0, 10)}) and allDay to true, and explain in clarificationNeeded that no date or time was found so the user should check it.
-- Always call the extract_event tool exactly once with your result. Do not respond in plain text.`;
+- If an event's date/time is genuinely unclear, still include it (don't drop it) -- set date to today (${nowLocal.slice(0, 10)}) if nothing usable was given, and explain in that event's clarificationNeeded that you guessed so the user should check it.
+- Always call the extract_events tool exactly once with your result. Do not respond in plain text.`;
 }
 
 function normalizeTime(value: unknown): string | null {
@@ -145,50 +159,7 @@ function addMinutesToTime(time: string, minutes: number): string {
   return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
-export async function parseNoteToEvent(
-  noteText: string,
-  timezone: string,
-  nowISO: string
-): Promise<ParsedEvent> {
-  const nowLocal = new Date(nowISO).toLocaleString("sv-SE", { timeZone: timezone }).replace(" ", "T");
-
-  // Cast the request/response loosely: the exact exported type names for
-  // tool definitions and tool_use blocks have moved between SDK minor
-  // versions, and this route only needs the shapes it reads below.
-  let response: { content: Array<{ type: string; input?: Record<string, unknown> }> };
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": getApiKey(),
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 1024,
-        system: buildSystemPrompt(nowLocal, timezone),
-        tools: [EXTRACT_EVENT_TOOL],
-        tool_choice: { type: "tool", name: "extract_event" },
-        messages: [{ role: "user", content: noteText }],
-      }),
-    });
-    const data = (await res.json()) as any;
-    if (!res.ok) {
-      throw new Error(data?.error?.message || `Anthropic API request failed (${res.status}).`);
-    }
-    response = data as { content: Array<{ type: string; input?: Record<string, unknown> }> };
-  } catch (err) {
-    throw err instanceof Error ? err : new Error(String(err));
-  }
-
-  const toolUse = response.content.find((block) => block.type === "tool_use");
-  if (!toolUse || !toolUse.input) {
-    throw new Error("The note parser didn't return a structured result. Try rephrasing the note.");
-  }
-
-  const raw = toolUse.input;
-
+function normalizeEvent(raw: Record<string, unknown>, nowLocal: string): ParsedEvent {
   const allDay = Boolean(raw.allDay);
   const date =
     typeof raw.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.date)
@@ -249,40 +220,21 @@ export async function parseNoteToEvent(
   };
 }
 
-const TAG_SENTENCES_TOOL = {
-  name: "tag_sentences",
-  description:
-    "Identify which of the numbered sentences describe a specific scheduling instruction that should become a calendar event.",
-  input_schema: {
-    type: "object",
-    properties: {
-      calendarIndices: {
-        type: "array",
-        description:
-          "0-based indices into the numbered sentence list, in any order, for every sentence that is part of a scheduling instruction: a meeting, call, deadline, or appointment with a clear time reference or scheduling intent (a date, day, time of day, or phrase like 'tomorrow', 'next week', 'by Friday'). Usually zero or one index. Include more than one only when the scheduling detail genuinely spans multiple adjacent sentences (e.g. one sentence names who and where, the next gives the time). A name appearing only as part of a case or matter reference is not by itself a scheduling instruction. Empty array if no sentence describes anything schedulable.",
-        items: { type: "integer" },
-      },
-    },
-    required: ["calendarIndices"],
-  },
-};
-
-function buildTagSystemPrompt(): string {
-  return `You are given a note broken into numbered sentences (0-indexed). Find the sentence(s) that describe a specific meeting, call, deadline, or appointment worth putting on a calendar -- something with a date, day, time, or clear scheduling intent. Sentences that are just background, case notes, or to-dos with no scheduling detail are not calendar sentences. Call the tag_sentences tool exactly once with your result. When nothing in the note is schedulable, return an empty array -- don't guess.`;
-}
-
 /**
- * Lightweight companion to parseNoteToEvent: given a note already split
- * into sentences, flags which ones look like the scheduling instruction so
- * the composer can pre-highlight them before the user taps "Process Note".
- * Kept as a separate, smaller tool call rather than reusing extract_event
- * so it stays fast enough to run automatically while the user is typing.
+ * Extracts every distinct schedulable event from a free-text note. Returns
+ * an empty array when nothing in the note is schedulable -- callers should
+ * treat that as a valid, non-error result.
  */
-export async function tagCalendarSentences(sentences: string[]): Promise<number[]> {
-  if (sentences.length === 0) return [];
+export async function parseNoteToEvents(
+  noteText: string,
+  timezone: string,
+  nowISO: string
+): Promise<ParsedEvent[]> {
+  const nowLocal = new Date(nowISO).toLocaleString("sv-SE", { timeZone: timezone }).replace(" ", "T");
 
-  const numbered = sentences.map((s, i) => `${i}: ${s}`).join("\n");
-
+  // Cast the request/response loosely: the exact exported type names for
+  // tool definitions and tool_use blocks have moved between SDK minor
+  // versions, and this route only needs the shapes it reads below.
   let response: { content: Array<{ type: string; input?: Record<string, unknown> }> };
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -294,11 +246,11 @@ export async function tagCalendarSentences(sentences: string[]): Promise<number[
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 256,
-        system: buildTagSystemPrompt(),
-        tools: [TAG_SENTENCES_TOOL],
-        tool_choice: { type: "tool", name: "tag_sentences" },
-        messages: [{ role: "user", content: numbered }],
+        max_tokens: 1536,
+        system: buildSystemPrompt(nowLocal, timezone),
+        tools: [EXTRACT_EVENTS_TOOL],
+        tool_choice: { type: "tool", name: "extract_events" },
+        messages: [{ role: "user", content: noteText }],
       }),
     });
     const data = (await res.json()) as any;
@@ -311,10 +263,13 @@ export async function tagCalendarSentences(sentences: string[]): Promise<number[
   }
 
   const toolUse = response.content.find((block) => block.type === "tool_use");
-  const raw = toolUse?.input?.calendarIndices;
-  if (!Array.isArray(raw)) return [];
+  if (!toolUse || !toolUse.input) {
+    throw new Error("The note parser didn't return a structured result. Try rephrasing the note.");
+  }
 
-  return raw
-    .filter((n): n is number => typeof n === "number" && Number.isInteger(n))
-    .filter((n) => n >= 0 && n < sentences.length);
+  const rawEvents = Array.isArray(toolUse.input.events)
+    ? (toolUse.input.events as Record<string, unknown>[])
+    : [];
+
+  return rawEvents.map((raw) => normalizeEvent(raw, nowLocal));
 }
