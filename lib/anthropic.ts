@@ -38,16 +38,18 @@ const EVENT_ITEM_SCHEMA = {
     },
     allDay: {
       type: "boolean",
-      description: "True only if the note clearly describes an all-day item with no specific time.",
+      description:
+        "True when the note gives a date with no time information at all for this event (no clock time and no loose part-of-day mention like 'morning'/'afternoon'/'evening'/'night'). False whenever an explicit clock time OR a part-of-day mention is present -- both of those get a real startTime/endTime instead, per the default-scheduling rules below.",
     },
     startTime: {
       type: "string",
-      description: "24-hour HH:MM start time, local to the user's timezone. Omit/empty if allDay is true.",
+      description:
+        "24-hour HH:MM start time, local to the user's timezone. Omit/empty if allDay is true. See the default-scheduling rules below for what to fill in when the note gives no explicit clock time.",
     },
     endTime: {
       type: "string",
       description:
-        "24-hour HH:MM end time, local to the user's timezone. If the note gives a duration instead of an end time, compute it from startTime. Default to 60 minutes after startTime if nothing indicates duration. Omit/empty if allDay is true.",
+        "24-hour HH:MM end time, local to the user's timezone. If the note gives a duration instead of an end time, compute it from startTime. Omit/empty if allDay is true. See the default-scheduling rules below for the default when nothing indicates duration.",
     },
     reminders: {
       type: "array",
@@ -136,11 +138,15 @@ Rules:
 - Return an empty array if nothing in the note is schedulable -- don't force a placeholder event just to have something to return.
 - Each event's title should be short and human-friendly (e.g. "Deposition prep with Sarah"), not the raw note text.
 - Each event's description must add real information beyond what its own title, date/time, duration, attendees, reminders, and video-call/Meet setup already say -- never restate "call/meeting with X" as description text just because someone was named as an attendee, and never restate the time or reminder timing in prose. If the note has nothing further for that event (no agenda, case reference, location, or other detail), leave description as an empty string. Write real description text as natural, complete sentences, not restated fragments of the note.
-- Default event length is 60 minutes when no end time or duration is given.
 - Default reminder is one popup 30 minutes before, unless the note specifies reminder timing or method for that event (e.g. "email me a day before", "remind me an hour ahead", "no reminder" -> empty reminders array).
 - Attendees: pull out people the note says to meet with, invite, cc, or have attend for that specific event -- including phrasing like "X to attend", "attendees: X, Y", or "X and Y will be there", not just "with X" -- not the note-taker. A name is only an attendee if the note says that person is participating, invited, cc'd, or attending -- a name that appears merely as part of a case/matter name, party name, or subject reference (e.g. "Smith v. Jones", "the Dillon matter", "re: Johnson deposition", a case caption, a docket title) is NOT an attendee unless the note separately says that person is attending or should be invited. When in doubt, leave them out rather than guessing. Only fill in an email if the note literally contains one; otherwise leave email as "" and put their name in "name" exactly as written (e.g. "Sarah", "the Hendricks", "opposing counsel on Mercer") — a name-only attendee gets matched against the user's contacts afterward, so don't guess or fabricate an address.
 - addGoogleMeet is true only for an explicitly virtual/video meeting. A note that just says "meeting" or "call" with no virtual cue should leave it false.
 - If an event's date/time is genuinely unclear, still include it (don't drop it) -- set date to today (${nowLocal.slice(0, 10)}) if nothing usable was given, and explain in that event's clarificationNeeded that you guessed so the user should check it.
+
+Default scheduling when the note doesn't give an explicit clock time for an event (this decides allDay/startTime/endTime together -- apply exactly one of these three cases):
+1. No time information of any kind (no clock time, no "morning"/"afternoon"/"evening"/"night") -- set allDay true, leave startTime/endTime empty.
+2. An explicit clock time is given (e.g. "3pm", "10:30am") -- set allDay false, startTime to that time, and endTime to whatever duration the note states, or 60 minutes after startTime if no duration is given.
+3. Only a loose part-of-day word is given, no clock time -- set allDay false and use its default start/end window: "morning" -> 09:00-11:59, "afternoon" -> 12:00-16:59, "evening" or "night" -> 17:00-20:00. An explicit duration elsewhere in the note (e.g. "morning meeting, 2 hours") overrides only the window's length, keeping its start time.
 - Always call the extract_events tool exactly once with your result. Do not respond in plain text.`;
 }
 
