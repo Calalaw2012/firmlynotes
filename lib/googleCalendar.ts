@@ -114,6 +114,49 @@ function extractPhoneDialIn(conferenceData: unknown): { phone: string | null; pi
   return { phone: phone || null, pin };
 }
 
+/** GETs a single event by id -- used to poll for conference details that weren't ready yet on the initial create/update response. */
+async function getCalendarEvent(accessToken: string, eventId: string): Promise<any> {
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (!res.ok) return null;
+  return res.json();
+}
+
+/**
+ * Google doesn't always finish provisioning a brand-new Meet conference by
+ * the moment it responds to the create/update request -- when that happens,
+ * `conferenceData.createRequest.status.statusCode` comes back "pending"
+ * instead of "success", and neither `hangoutLink` nor
+ * `conferenceData.entryPoints` (the actual video link and dial-in number)
+ * are populated yet. Left alone, that's exactly what produces the bug of
+ * "I checked the box, but no link ever shows up" -- the very first response
+ * genuinely has nothing to show yet. This polls the event a handful of
+ * times with a short pause so the real link is ready by the time we
+ * respond, instead of permanently settling for null.
+ */
+async function waitForConference(accessToken: string, data: any): Promise<any> {
+  const statusCode = data?.conferenceData?.createRequest?.status?.statusCode;
+  if (statusCode !== "pending") return data;
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const fresh = await getCalendarEvent(accessToken, data.id);
+    if (!fresh) break;
+    const freshStatus = fresh?.conferenceData?.createRequest?.status?.statusCode;
+    if (freshStatus !== "pending" || fresh?.hangoutLink || fresh?.conferenceData?.entryPoints) {
+      return fresh;
+    }
+  }
+  // Gave it several seconds and it's still not ready -- return what we have
+  // rather than hold up the response indefinitely. meetLink/meetPhone/
+  // meetPin will just come back null this one time (Google does eventually
+  // finish provisioning it in the background; a later edit-in-place update
+  // or a normal Calendar refresh will pick it up).
+  return data;
+}
+
 /** Shared shape-mapping from a raw Google Calendar API event response to our own CreatedEvent. */
 function toCreatedEvent(data: any): CreatedEvent {
   const meetLink: string | null =
@@ -162,7 +205,8 @@ export async function createCalendarEvent(
     throw new Error(message);
   }
 
-  return toCreatedEvent(data);
+  const finalData = event.addGoogleMeet ? await waitForConference(accessToken, data) : data;
+  return toCreatedEvent(finalData);
 }
 
 /**
@@ -208,5 +252,6 @@ export async function updateCalendarEvent(
     throw new Error(message);
   }
 
-  return toCreatedEvent(data);
+  const finalData = event.addGoogleMeet ? await waitForConference(accessToken, data) : data;
+  return toCreatedEvent(finalData);
 }
