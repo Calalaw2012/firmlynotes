@@ -10,7 +10,7 @@ import RecentList, { type RecentEntry } from "@/components/RecentList";
 import Banner from "@/components/Banner";
 import type { Attendee, ParsedEvent } from "@/types/event";
 
-const PARSE_DEBOUNCE_MS = 3000;
+const PARSE_DEBOUNCE_MS = 5000;
 const MIN_LENGTH_TO_PARSE = 12;
 
 interface CardState {
@@ -20,6 +20,8 @@ interface CardState {
   status: EventCardStatus;
   error: string | null;
   meetLink: string | null;
+  meetPhone: string | null;
+  meetPin: string | null;
   htmlLink: string | null;
 }
 
@@ -138,6 +140,8 @@ function reconcileCards(prevCards: CardState[], events: ParsedEvent[], dismissed
       status: "draft" as const,
       error: null,
       meetLink: null,
+      meetPhone: null,
+      meetPin: null,
       htmlLink: null,
     }));
 
@@ -150,6 +154,7 @@ export default function Home() {
   const [noteText, setNoteText] = useState("");
   const [cards, setCards] = useState<CardState[]>([]);
   const [parsing, setParsing] = useState(false);
+  const [countdown, setCountdown] = useState<number | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [recent, setRecent] = useState<RecentEntry[]>([]);
   const [signInError, setSignInError] = useState<string | null>(null);
@@ -172,15 +177,29 @@ export default function Home() {
     window.history.replaceState({}, "", window.location.pathname);
   }, []);
 
-  // Auto-extract every schedulable item in the note, three seconds after
-  // the user stops typing. Debounced client-side so each real pause fires
-  // exactly one /api/parse-note call, not one per keystroke.
+  // Auto-extract every schedulable item in the note, five seconds after
+  // the user stops typing (matches the approved mockup's timing). Debounced
+  // client-side so each real pause fires exactly one /api/parse-note call,
+  // not one per keystroke. While that pause is counting down, the UI shows
+  // a live "processing… Ns" countdown so it's clear an extraction is about
+  // to fire rather than looking idle; once the request actually goes out,
+  // it switches to a plain "processing…" for however long the API call
+  // itself takes.
   useEffect(() => {
     const trimmed = noteText.trim();
-    if (trimmed.length < MIN_LENGTH_TO_PARSE) return;
-    if (trimmed === lastParsedRef.current) return;
+    if (trimmed.length < MIN_LENGTH_TO_PARSE || trimmed === lastParsedRef.current) {
+      setCountdown(null);
+      return;
+    }
+
+    setCountdown(Math.round(PARSE_DEBOUNCE_MS / 1000));
+    const tick = setInterval(() => {
+      setCountdown((c) => (c !== null && c > 1 ? c - 1 : 0));
+    }, 1000);
 
     const handle = setTimeout(async () => {
+      clearInterval(tick);
+      setCountdown(null);
       setParsing(true);
       setParseError(null);
       try {
@@ -202,7 +221,10 @@ export default function Home() {
       }
     }, PARSE_DEBOUNCE_MS);
 
-    return () => clearTimeout(handle);
+    return () => {
+      clearTimeout(handle);
+      clearInterval(tick);
+    };
   }, [noteText]);
 
   // Resolve name-only attendees against Google contacts as soon as a fresh
@@ -221,6 +243,22 @@ export default function Home() {
       });
     });
   }, [cards]);
+
+  // Clearing the note is a deliberate, explicit action -- it doesn't wait
+  // out the debounce, and it also drops every event card straight away
+  // (not just the text), matching the approved mockup's Clear note
+  // behavior. Also resets the tracking refs so a note typed fresh afterward
+  // isn't held back by state left over from the cleared one.
+  function clearNote() {
+    setNoteText("");
+    setCards([]);
+    setCountdown(null);
+    setParsing(false);
+    setParseError(null);
+    lastParsedRef.current = "";
+    dismissedRef.current = new Set();
+    resolvedRef.current = new Set();
+  }
 
   function updateCard(id: string, event: ParsedEvent) {
     setCards((prev) => prev.map((c) => (c.id === id ? { ...c, event, userEdited: true } : c)));
@@ -258,6 +296,8 @@ export default function Home() {
                 event: eventToSend,
                 status: "sent",
                 meetLink: data.meetLink ?? null,
+                meetPhone: data.meetPhone ?? null,
+                meetPin: data.meetPin ?? null,
                 htmlLink: data.htmlLink ?? null,
               }
             : c
@@ -288,6 +328,17 @@ export default function Home() {
         )
       );
     }
+  }
+
+  // "Add all to Calendar" sends every card that hasn't been sent yet (drafts
+  // and cards that errored on a previous attempt) in one click. Each card
+  // still goes through the normal sendCard flow and gets its own
+  // creating/sent/error status, so one failing event doesn't block the rest.
+  const sendableCards = cards.filter((c) => c.status === "draft" || c.status === "error");
+  const sendingAll = cards.some((c) => c.status === "creating") && sendableCards.length === 0;
+
+  async function sendAllCards() {
+    await Promise.all(sendableCards.map((c) => sendCard(c.id)));
   }
 
   if (status === "loading") {
@@ -332,38 +383,57 @@ export default function Home() {
 
         {parseError && <Banner variant="danger">{parseError}</Banner>}
 
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          <NoteComposer value={noteText} onChange={setNoteText} />
+        {/* Single column by default -- this tool works fine for someone who
+            only ever writes plain notes and never gets an event card. The
+            second column only appears once the note actually contains a
+            detected, schedulable event; it disappears again if every card
+            is dismissed or sent... no, sent cards stay (see below) but a
+            note that goes back to having zero cards collapses back to one
+            column. */}
+        <div className={`grid grid-cols-1 gap-6 ${cards.length > 0 ? "md:grid-cols-2" : ""}`}>
+          <NoteComposer value={noteText} onChange={setNoteText} onClear={clearNote} />
 
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-indigo-text">
-                Events found in this note
-              </h2>
-              {parsing && <span className="text-xs text-ink-faint">Reading…</span>}
+          {cards.length > 0 && (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-indigo-text">
+                  Events found in this note
+                </h2>
+                <div className="flex items-center gap-3">
+                  {parsing && <span className="text-xs text-ink-faint">processing…</span>}
+                  {!parsing && countdown !== null && (
+                    <span className="text-xs text-ink-faint">processing… {countdown}s</span>
+                  )}
+                  {sendableCards.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={sendAllCards}
+                      disabled={sendingAll}
+                      className="rounded-pill border border-indigo-border bg-indigo-bg px-3 py-1 text-xs font-semibold text-indigo-text transition-opacity disabled:cursor-not-allowed disabled:opacity-50 hover:brightness-110"
+                    >
+                      {sendingAll ? "Adding all…" : `Add all to Calendar (${sendableCards.length})`}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {cards.map((card) => (
+                <EventCard
+                  key={card.id}
+                  event={card.event}
+                  status={card.status}
+                  error={card.error}
+                  meetLink={card.meetLink}
+                  meetPhone={card.meetPhone}
+                  meetPin={card.meetPin}
+                  htmlLink={card.htmlLink}
+                  onChange={(e) => updateCard(card.id, e)}
+                  onSend={() => sendCard(card.id)}
+                  onDismiss={() => dismissCard(card.id)}
+                />
+              ))}
             </div>
-
-            {cards.length === 0 && !parsing && (
-              <p className="rounded-[10px] border border-dashed border-border px-4 py-6 text-center text-sm text-ink-faint">
-                Nothing schedulable yet — event cards will appear here once your note names a date or
-                time.
-              </p>
-            )}
-
-            {cards.map((card) => (
-              <EventCard
-                key={card.id}
-                event={card.event}
-                status={card.status}
-                error={card.error}
-                meetLink={card.meetLink}
-                htmlLink={card.htmlLink}
-                onChange={(e) => updateCard(card.id, e)}
-                onSend={() => sendCard(card.id)}
-                onDismiss={() => dismissCard(card.id)}
-              />
-            ))}
-          </div>
+          )}
         </div>
 
         <RecentList items={recent} />
