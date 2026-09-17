@@ -8,7 +8,7 @@ import NoteComposer from "@/components/NoteComposer";
 import EventCard, { type EventCardStatus } from "@/components/EventCard";
 import RecentList, { type RecentEntry } from "@/components/RecentList";
 import Banner from "@/components/Banner";
-import type { Attendee, ParsedEvent } from "@/types/event";
+import type { Attendee, ParsedEvent, Reminder } from "@/types/event";
 
 const PARSE_DEBOUNCE_MS = 5000;
 const MIN_LENGTH_TO_PARSE = 12;
@@ -19,6 +19,15 @@ interface CardState {
   userEdited: boolean;
   status: EventCardStatus;
   error: string | null;
+  /** Google Calendar's own id for this event, once it's been sent at least once. */
+  googleEventId: string | null;
+  /**
+   * True when this card was already sent, but a later parse of the note
+   * produced different details for the same event -- surfaced in the card
+   * as "this changed, click Update event" rather than silently either
+   * re-syncing on its own or spawning a duplicate card.
+   */
+  dirty: boolean;
   meetLink: string | null;
   meetPhone: string | null;
   meetPin: string | null;
@@ -89,22 +98,81 @@ async function resolveAttendees(attendees: Attendee[]): Promise<Attendee[]> {
   );
 }
 
+/** Adds `self` as the first attendee, unless they're already on the list. */
+function injectSelf(event: ParsedEvent, self: Attendee | null): ParsedEvent {
+  if (!self || !self.email) return event;
+  const already = event.attendees.some((a) => a.email.toLowerCase() === self.email.toLowerCase());
+  if (already) return event;
+  return { ...event, attendees: [self, ...event.attendees] };
+}
+
+function remindersEqual(a: Reminder[], b: Reminder[]): boolean {
+  if (a.length !== b.length) return false;
+  const norm = (rs: Reminder[]) => rs.map((r) => `${r.method}:${r.minutesBefore}`).sort();
+  const na = norm(a);
+  const nb = norm(b);
+  return na.every((v, i) => v === nb[i]);
+}
+
+function attendeesEqual(a: Attendee[], b: Attendee[]): boolean {
+  const norm = (as: Attendee[]) => as.map((x) => x.email.toLowerCase()).filter(Boolean).sort();
+  const na = norm(a);
+  const nb = norm(b);
+  if (na.length !== nb.length) return false;
+  return na.every((v, i) => v === nb[i]);
+}
+
+/** Everything that actually matters for "is this still the same event". */
+function eventsEqual(a: ParsedEvent, b: ParsedEvent): boolean {
+  return (
+    a.title.trim() === b.title.trim() &&
+    a.date === b.date &&
+    a.allDay === b.allDay &&
+    (a.allDay || (a.startTime === b.startTime && a.endTime === b.endTime)) &&
+    a.description.trim() === b.description.trim() &&
+    a.addGoogleMeet === b.addGoogleMeet &&
+    remindersEqual(a.reminders, b.reminders) &&
+    attendeesEqual(a.attendees, b.attendees)
+  );
+}
+
 /**
  * Merges a fresh parse-note result into the existing card list without
- * disturbing cards the user has already started editing or already sent.
- * Matches a new event to an existing card by (date, normalized title);
- * falls back to matching by date alone when no title match is found. An
- * event matching a dismissed signature is skipped so a card the user
- * dismissed doesn't silently reappear while they keep typing around it.
+ * disturbing cards the user has already started editing, or that are
+ * mid-send right now. Matches a new event to an existing card by (date,
+ * normalized title); falls back to matching by date alone when no title
+ * match is found. An event matching a dismissed signature is skipped so a
+ * card the user dismissed doesn't silently reappear while they keep typing
+ * around it.
+ *
+ * A card that was already sent can still be matched: if the freshly parsed
+ * version of that same event differs from what's on the card (a changed
+ * time, a new attendee, etc.), the card is flagged `dirty` and its `event`
+ * is updated to the new version -- so the card keeps showing what the note
+ * now says, with an "Update event" action to push that change to the real
+ * calendar entry, rather than a second card being created for the same
+ * thing while the original sits there unsynced.
  */
 function reconcileCards(prevCards: CardState[], events: ParsedEvent[], dismissed: Set<string>): CardState[] {
   const usedNew = new Set<number>();
   const matchedPrev = new Set<string>();
   const next = prevCards.map((c) => ({ ...c }));
 
+  function applyMatch(card: CardState, matched: ParsedEvent) {
+    if (card.status === "sent") {
+      if (!eventsEqual(card.event, matched)) {
+        card.event = matched;
+        card.dirty = true;
+      }
+    } else {
+      card.event = matched;
+    }
+  }
+
   // Pass 1: match by date + normalized title.
   for (const card of next) {
-    if (card.status === "sent" || card.userEdited) continue;
+    if (card.status === "creating") continue;
+    if (card.status !== "sent" && card.userEdited) continue;
     const idx = events.findIndex(
       (e, ei) =>
         !usedNew.has(ei) &&
@@ -114,18 +182,19 @@ function reconcileCards(prevCards: CardState[], events: ParsedEvent[], dismissed
     if (idx !== -1) {
       usedNew.add(idx);
       matchedPrev.add(card.id);
-      card.event = events[idx];
+      applyMatch(card, events[idx]);
     }
   }
 
   // Pass 2: fallback match remaining cards by date only.
   for (const card of next) {
-    if (card.status === "sent" || card.userEdited || matchedPrev.has(card.id)) continue;
+    if (card.status === "creating" || matchedPrev.has(card.id)) continue;
+    if (card.status !== "sent" && card.userEdited) continue;
     const idx = events.findIndex((e, ei) => !usedNew.has(ei) && e.date === card.event.date);
     if (idx !== -1) {
       usedNew.add(idx);
       matchedPrev.add(card.id);
-      card.event = events[idx];
+      applyMatch(card, events[idx]);
     }
   }
 
@@ -139,6 +208,8 @@ function reconcileCards(prevCards: CardState[], events: ParsedEvent[], dismissed
       userEdited: false,
       status: "draft" as const,
       error: null,
+      googleEventId: null,
+      dirty: false,
       meetLink: null,
       meetPhone: null,
       meetPin: null,
@@ -163,6 +234,14 @@ export default function Home() {
   const dismissedRef = useRef<Set<string>>(new Set());
   const resolvedRef = useRef<Set<string>>(new Set());
 
+  // The signed-in user is always a default attendee on every event this
+  // tool creates -- injected here (client-side, into every fresh parse
+  // result) rather than in the AI prompt, so it's guaranteed regardless of
+  // whether the note happens to mention the note-taker.
+  const selfAttendee: Attendee | null = session?.user?.email
+    ? { name: session.user.name || session.user.email, email: session.user.email }
+    : null;
+
   // NextAuth redirects rejected sign-ins back to "/?error=...". Read it once
   // on load, show it, then clean the URL so refreshing doesn't re-show it.
   useEffect(() => {
@@ -180,11 +259,10 @@ export default function Home() {
   // Auto-extract every schedulable item in the note, five seconds after
   // the user stops typing (matches the approved mockup's timing). Debounced
   // client-side so each real pause fires exactly one /api/parse-note call,
-  // not one per keystroke. While that pause is counting down, the UI shows
-  // a live "processing… Ns" countdown so it's clear an extraction is about
-  // to fire rather than looking idle; once the request actually goes out,
-  // it switches to a plain "processing…" for however long the API call
-  // itself takes.
+  // not one per keystroke. Both the countdown and the "processing…" state
+  // while the request is in flight are surfaced on the note card itself
+  // (see NoteComposer's parsing/countdown props) so they're visible from
+  // the very first keystroke -- well before any event card exists.
   useEffect(() => {
     const trimmed = noteText.trim();
     if (trimmed.length < MIN_LENGTH_TO_PARSE || trimmed === lastParsedRef.current) {
@@ -213,18 +291,23 @@ export default function Home() {
         if (!res.ok) throw new Error(data.error || "Couldn't read that note.");
         lastParsedRef.current = trimmed;
         const events: ParsedEvent[] = Array.isArray(data.events) ? data.events : [];
-        setCards((prev) => reconcileCards(prev, events, dismissedRef.current));
+        const withSelf = events.map((e) => injectSelf(e, selfAttendee));
+        setCards((prev) => reconcileCards(prev, withSelf, dismissedRef.current));
       } catch (err) {
         setParseError(err instanceof Error ? err.message : "Couldn't read that note.");
       } finally {
         setParsing(false);
       }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, PARSE_DEBOUNCE_MS);
 
     return () => {
       clearTimeout(handle);
       clearInterval(tick);
     };
+    // selfAttendee intentionally excluded -- it only changes on sign-in/out,
+    // which already remounts this whole page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noteText]);
 
   // Resolve name-only attendees against Google contacts as soon as a fresh
@@ -272,9 +355,16 @@ export default function Home() {
     });
   }
 
+  /**
+   * Sends a card to Google Calendar. A card that already has a
+   * googleEventId (i.e. it's `sent` and `dirty`) updates that same event in
+   * place instead of creating a new one -- the note stays the single source
+   * of truth without leaving a duplicate, unsynced original behind.
+   */
   async function sendCard(id: string) {
     const card = cards.find((c) => c.id === id);
     if (!card) return;
+    const isUpdate = Boolean(card.googleEventId);
     setCards((prev) => prev.map((c) => (c.id === id ? { ...c, status: "creating", error: null } : c)));
     try {
       const attendees = await resolveAttendees(card.event.attendees);
@@ -283,10 +373,12 @@ export default function Home() {
       const res = await fetch("/api/create-event", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ event: eventToSend, timeZone }),
+        body: JSON.stringify(
+          isUpdate ? { event: eventToSend, timeZone, eventId: card.googleEventId } : { event: eventToSend, timeZone }
+        ),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Couldn't add that to your calendar.");
+      if (!res.ok) throw new Error(data.error || `Couldn't ${isUpdate ? "update" : "add"} that on your calendar.`);
 
       setCards((prev) =>
         prev.map((c) =>
@@ -295,26 +387,32 @@ export default function Home() {
                 ...c,
                 event: eventToSend,
                 status: "sent",
+                dirty: false,
+                googleEventId: data.id ?? c.googleEventId,
                 meetLink: data.meetLink ?? null,
                 meetPhone: data.meetPhone ?? null,
                 meetPin: data.meetPin ?? null,
-                htmlLink: data.htmlLink ?? null,
+                htmlLink: data.htmlLink ?? c.htmlLink,
               }
             : c
         )
       );
-      setRecent((prev) =>
-        [
-          {
-            title: eventToSend.title,
-            when: formatWhen(eventToSend),
-            link: data.htmlLink,
-            meetLink: data.meetLink ?? null,
-            attendeeCount: eventToSend.attendees.length,
-          },
-          ...prev,
-        ].slice(0, 6)
-      );
+      // Only genuinely new events join the recent list -- an update to an
+      // already-sent event isn't a new thing to show there.
+      if (!isUpdate) {
+        setRecent((prev) =>
+          [
+            {
+              title: eventToSend.title,
+              when: formatWhen(eventToSend),
+              link: data.htmlLink,
+              meetLink: data.meetLink ?? null,
+              attendeeCount: eventToSend.attendees.length,
+            },
+            ...prev,
+          ].slice(0, 6)
+        );
+      }
     } catch (err) {
       setCards((prev) =>
         prev.map((c) =>
@@ -322,7 +420,8 @@ export default function Home() {
             ? {
                 ...c,
                 status: "error",
-                error: err instanceof Error ? err.message : "Couldn't add that to your calendar.",
+                error:
+                  err instanceof Error ? err.message : `Couldn't ${isUpdate ? "update" : "add"} that on your calendar.`,
               }
             : c
         )
@@ -330,11 +429,12 @@ export default function Home() {
     }
   }
 
-  // "Add all to Calendar" sends every card that hasn't been sent yet (drafts
-  // and cards that errored on a previous attempt) in one click. Each card
-  // still goes through the normal sendCard flow and gets its own
-  // creating/sent/error status, so one failing event doesn't block the rest.
-  const sendableCards = cards.filter((c) => c.status === "draft" || c.status === "error");
+  // "Add all to Calendar" sends every card that isn't already in sync with
+  // the calendar: drafts, cards that errored on a previous attempt, and
+  // sent cards whose note text has since changed (dirty). Each card still
+  // goes through the normal sendCard flow and gets its own status, so one
+  // failure doesn't block the rest.
+  const sendableCards = cards.filter((c) => c.status === "draft" || c.status === "error" || (c.status === "sent" && c.dirty));
   const sendingAll = cards.some((c) => c.status === "creating") && sendableCards.length === 0;
 
   async function sendAllCards() {
@@ -391,30 +491,30 @@ export default function Home() {
             note that goes back to having zero cards collapses back to one
             column. */}
         <div className={`grid grid-cols-1 gap-6 ${cards.length > 0 ? "md:grid-cols-2" : ""}`}>
-          <NoteComposer value={noteText} onChange={setNoteText} onClear={clearNote} />
+          <NoteComposer
+            value={noteText}
+            onChange={setNoteText}
+            onClear={clearNote}
+            parsing={parsing}
+            countdown={countdown}
+          />
 
           {cards.length > 0 && (
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-indigo-text">
-                  Events found in this note
+                  Calendar Events
                 </h2>
-                <div className="flex items-center gap-3">
-                  {parsing && <span className="text-xs text-ink-faint">processing…</span>}
-                  {!parsing && countdown !== null && (
-                    <span className="text-xs text-ink-faint">processing… {countdown}s</span>
-                  )}
-                  {sendableCards.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={sendAllCards}
-                      disabled={sendingAll}
-                      className="rounded-pill border border-indigo-border bg-indigo-bg px-3 py-1 text-xs font-semibold text-indigo-text transition-opacity disabled:cursor-not-allowed disabled:opacity-50 hover:brightness-110"
-                    >
-                      {sendingAll ? "Adding all…" : `Add all to Calendar (${sendableCards.length})`}
-                    </button>
-                  )}
-                </div>
+                {sendableCards.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={sendAllCards}
+                    disabled={sendingAll}
+                    className="rounded-pill border border-indigo-border bg-indigo-bg px-3 py-1 text-xs font-semibold text-indigo-text transition-opacity disabled:cursor-not-allowed disabled:opacity-50 hover:brightness-110"
+                  >
+                    {sendingAll ? "Adding all…" : `Add all to Calendar (${sendableCards.length})`}
+                  </button>
+                )}
               </div>
 
               {cards.map((card) => (
@@ -423,6 +523,7 @@ export default function Home() {
                   event={card.event}
                   status={card.status}
                   error={card.error}
+                  dirty={card.dirty}
                   meetLink={card.meetLink}
                   meetPhone={card.meetPhone}
                   meetPin={card.meetPin}
