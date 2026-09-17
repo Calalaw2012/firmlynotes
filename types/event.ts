@@ -19,7 +19,7 @@ export interface Attendee {
 
 /**
  * Structured event data extracted from a free-text note.
- * Produced by /api/parse-note, edited by the user in the confirm card,
+ * Produced by /api/parse-note, edited by the user in the event card,
  * then sent to /api/create-event.
  */
 export interface ParsedEvent {
@@ -34,6 +34,15 @@ export interface ParsedEvent {
   addGoogleMeet: boolean;
   /** Short note to the user about anything the parser guessed or couldn't find. */
   clarificationNeeded: string | null;
+}
+
+/**
+ * A note can describe more than one schedulable item -- /api/parse-note
+ * returns every distinct event it found, in note order. An empty array is
+ * a valid result: it means nothing in the note looked schedulable.
+ */
+export interface ParseNoteResult {
+  events: ParsedEvent[];
 }
 
 export interface CreatedEvent {
