@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
-import { parseNoteToEvent } from "@/lib/anthropic";
+import { parseNoteToEvents } from "@/lib/anthropic";
 
 export async function POST(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
@@ -21,8 +21,8 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const event = await parseNoteToEvent(text, timezone, nowISO);
-    return NextResponse.json({ event });
+    const events = await parseNoteToEvents(text, timezone, nowISO);
+    return NextResponse.json({ events });
   } catch (err) {
     console.error("parse-note failed", err);
     const message = err instanceof Error ? err.message : "Couldn't parse that note.";
