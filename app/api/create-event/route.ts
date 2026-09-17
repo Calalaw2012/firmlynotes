@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createCalendarEvent, getGoogleAccessToken, GoogleAuthError } from "@/lib/googleCalendar";
+import {
+  createCalendarEvent,
+  updateCalendarEvent,
+  getGoogleAccessToken,
+  GoogleAuthError,
+} from "@/lib/googleCalendar";
 import type { Attendee, ParsedEvent, Reminder } from "@/types/event";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -22,11 +27,14 @@ function isResolvedAttendee(a: unknown): a is Attendee {
   return typeof rec.name === "string" && typeof rec.email === "string" && EMAIL_RE.test(rec.email);
 }
 
-function validateEvent(body: unknown): { event: ParsedEvent; timeZone: string } | null {
+function validateEvent(body: unknown): { event: ParsedEvent; timeZone: string; eventId: string | null } | null {
   if (typeof body !== "object" || body === null) return null;
   const rec = body as Record<string, unknown>;
   const event = rec.event as Record<string, unknown> | undefined;
   const timeZone = rec.timeZone;
+  // Present and non-empty means "update this event" rather than "create a
+  // new one" — see createCalendarEvent vs. updateCalendarEvent below.
+  const eventId = typeof rec.eventId === "string" && rec.eventId.trim() ? rec.eventId.trim() : null;
 
   if (!event || typeof timeZone !== "string" || !timeZone) return null;
   if (typeof event.title !== "string" || !event.title.trim()) return null;
@@ -47,6 +55,7 @@ function validateEvent(body: unknown): { event: ParsedEvent; timeZone: string } 
 
   return {
     timeZone,
+    eventId,
     event: {
       title: event.title as string,
       description: typeof event.description === "string" ? event.description : "",
@@ -86,10 +95,19 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const created = await createCalendarEvent(accessToken, parsed.event, parsed.timeZone);
-    return NextResponse.json(created);
+    // A request that names an existing Google event id updates that event
+    // in place instead of creating a second one -- this is what keeps an
+    // edited note in sync with the calendar entry it already produced,
+    // rather than leaving a stale original behind next to a new duplicate.
+    const result = parsed.eventId
+      ? await updateCalendarEvent(accessToken, parsed.eventId, parsed.event, parsed.timeZone)
+      : await createCalendarEvent(accessToken, parsed.event, parsed.timeZone);
+    return NextResponse.json(result);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to create the calendar event.";
+    const message =
+      err instanceof Error
+        ? err.message
+        : `Failed to ${parsed.eventId ? "update" : "create"} the calendar event.`;
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }
