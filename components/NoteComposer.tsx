@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { saveNoteAsWordDoc } from "@/lib/saveAsWord";
 
 const PLACEHOLDER = "Type here...create notes,  calendar entries, video and conference call invites";
@@ -23,27 +23,50 @@ const PLACEHOLDER = "Type here...create notes,  calendar entries, video and conf
  */
 type DictateState = "idle" | "recording" | "processing" | "blocked" | "unsupported";
 
+/** A space if `before` doesn't already end in whitespace, else nothing. */
+function spacer(before: string): string {
+  return before.length === 0 || /\s$/.test(before) ? "" : " ";
+}
+
 /**
- * Toggles the browser's built-in speech-to-text (Web Speech API) straight
- * into the note. Transcribed speech is appended to whatever text is already
- * in the box, so dictation and typing can be freely mixed.
+ * Toggles the browser's built-in speech-to-text (Web Speech API), inserting
+ * the transcript at wherever the cursor was in the note when dictation
+ * started -- not always at the end of the existing text. Requires the
+ * textarea's own ref so it can read/restore the real caret position, since
+ * a controlled <textarea>'s selection isn't something React tracks for you.
  */
 function DictateButton({
   value,
   onChange,
+  textareaRef,
 }: {
   value: string;
   onChange: (value: string) => void;
+  textareaRef: RefObject<HTMLTextAreaElement>;
 }) {
   const [dictateState, setDictateState] = useState<DictateState>("idle");
   const recognitionRef = useRef<any>(null);
-  const baseTextRef = useRef("");
   const onChangeRef = useRef(onChange);
   const blockedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Captured the instant dictation starts: everything before/after the
+  // cursor at that moment. Speech gets spliced in between the two: nothing
+  // typed elsewhere in the note is disturbed, and the insertion point
+  // itself advances as committed (final) words come in.
+  const beforeRef = useRef("");
+  const afterRef = useRef("");
+  const committedRef = useRef("");
 
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
+
+  function moveCaretTo(pos: number) {
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) el.setSelectionRange(pos, pos);
+    });
+  }
 
   useEffect(() => {
     const SpeechRecognition =
@@ -70,13 +93,17 @@ function DictateButton({
         }
       }
       if (finalChunk) {
-        const needsSpace = baseTextRef.current.length > 0 && !baseTextRef.current.endsWith(" ");
-        baseTextRef.current = `${baseTextRef.current}${needsSpace ? " " : ""}${finalChunk.trim()} `;
-        onChangeRef.current(baseTextRef.current);
+        const soFar = beforeRef.current + committedRef.current;
+        committedRef.current = `${committedRef.current}${spacer(soFar)}${finalChunk.trim()} `;
+        const newValue = `${beforeRef.current}${committedRef.current}${afterRef.current}`;
+        onChangeRef.current(newValue);
         setDictateState("recording");
+        moveCaretTo(beforeRef.current.length + committedRef.current.length);
       } else if (interimChunk) {
-        onChangeRef.current(`${baseTextRef.current}${interimChunk}`);
+        const newValue = `${beforeRef.current}${committedRef.current}${interimChunk}${afterRef.current}`;
+        onChangeRef.current(newValue);
         setDictateState("processing");
+        moveCaretTo(beforeRef.current.length + committedRef.current.length + interimChunk.length);
       } else {
         setDictateState("recording");
       }
@@ -103,7 +130,7 @@ function DictateButton({
       recognition.stop();
       if (blockedTimeoutRef.current) clearTimeout(blockedTimeoutRef.current);
     };
-  }, []);
+  }, [textareaRef]);
 
   function toggle() {
     const recognition = recognitionRef.current;
@@ -113,7 +140,11 @@ function DictateButton({
       setDictateState("idle");
       return;
     }
-    baseTextRef.current = value.trim() ? `${value.trim()} ` : "";
+    const el = textareaRef.current;
+    const cursor = el ? el.selectionStart ?? value.length : value.length;
+    beforeRef.current = value.slice(0, cursor);
+    afterRef.current = value.slice(cursor);
+    committedRef.current = "";
     try {
       recognition.start();
       setDictateState("recording");
@@ -182,13 +213,20 @@ export default function NoteComposer({
   value,
   onChange,
   onClear,
+  parsing,
+  countdown,
 }: {
   value: string;
   onChange: (value: string) => void;
   onClear: () => void;
+  /** True while the note is actually being sent to the parser right now. */
+  parsing: boolean;
+  /** Seconds left before the debounced auto-parse fires, or null when idle. */
+  countdown: number | null;
 }) {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   async function handleSave() {
     if (!value.trim() || saving) return;
@@ -211,9 +249,20 @@ export default function NoteComposer({
     setNotice(null);
   }
 
+  // Processing status takes priority over the save notice and the default
+  // helper text -- it's shown here, on the note card itself, so it's
+  // visible from the very first keystroke, well before any event card
+  // exists on the other side.
+  const statusText = parsing
+    ? "processing…"
+    : countdown !== null
+      ? `processing… ${countdown}s`
+      : (notice ?? "Every schedulable item in the note shows up on the right, a few seconds after you stop typing.");
+
   return (
     <div className="space-y-3">
       <textarea
+        ref={textareaRef}
         autoFocus
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -221,11 +270,9 @@ export default function NoteComposer({
         className="h-[50vh] min-h-[260px] w-full resize-none rounded-[10px] border border-border bg-bg-elevated px-5 py-4 text-lg leading-relaxed text-ink placeholder:text-ink-faint/80 focus-ring"
       />
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <span className="text-xs text-ink-faint">
-          {notice ?? "Every schedulable item in the note shows up on the right, a few seconds after you stop typing."}
-        </span>
+        <span className="text-xs text-ink-faint">{statusText}</span>
         <div className="flex flex-wrap items-center gap-2">
-          <DictateButton value={value} onChange={onChange} />
+          <DictateButton value={value} onChange={onChange} textareaRef={textareaRef} />
           <button
             type="button"
             onClick={handleClear}
