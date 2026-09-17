@@ -114,6 +114,19 @@ function extractPhoneDialIn(conferenceData: unknown): { phone: string | null; pi
   return { phone: phone || null, pin };
 }
 
+/** Shared shape-mapping from a raw Google Calendar API event response to our own CreatedEvent. */
+function toCreatedEvent(data: any): CreatedEvent {
+  const meetLink: string | null =
+    data.hangoutLink ??
+    data.conferenceData?.entryPoints?.find((e: { entryPointType?: string }) => e.entryPointType === "video")
+      ?.uri ??
+    null;
+
+  const { phone: meetPhone, pin: meetPin } = extractPhoneDialIn(data.conferenceData);
+
+  return { htmlLink: data.htmlLink, id: data.id, meetLink, meetPhone, meetPin };
+}
+
 export async function createCalendarEvent(
   accessToken: string,
   event: ParsedEvent,
@@ -149,13 +162,51 @@ export async function createCalendarEvent(
     throw new Error(message);
   }
 
-  const meetLink: string | null =
-    data.hangoutLink ??
-    data.conferenceData?.entryPoints?.find((e: { entryPointType?: string }) => e.entryPointType === "video")
-      ?.uri ??
-    null;
+  return toCreatedEvent(data);
+}
 
-  const { phone: meetPhone, pin: meetPin } = extractPhoneDialIn(data.conferenceData);
+/**
+ * Updates an event that was already created earlier in this session, in
+ * place -- used when the note text describing an already-sent event
+ * changes (a different time, a new attendee, etc.), so the note stays the
+ * single source of truth without leaving a duplicate, stale event behind
+ * on the calendar. A PATCH, not a PUT: only the fields in `resource` are
+ * touched, so anything Google itself might have added to the event (an
+ * attendee's RSVP, for instance) is left alone.
+ */
+export async function updateCalendarEvent(
+  accessToken: string,
+  eventId: string,
+  event: ParsedEvent,
+  timeZone: string
+): Promise<CreatedEvent> {
+  const resource = buildEventResource(event, timeZone);
 
-  return { htmlLink: data.htmlLink, id: data.id, meetLink, meetPhone, meetPin };
+  const url = new URL(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`
+  );
+  if (event.addGoogleMeet) {
+    url.searchParams.set("conferenceDataVersion", "1");
+  }
+  if (event.attendees.length > 0) {
+    url.searchParams.set("sendUpdates", "all");
+  }
+
+  const res = await fetch(url.toString(), {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(resource),
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    const message = data?.error?.message || "Google Calendar rejected the update.";
+    throw new Error(message);
+  }
+
+  return toCreatedEvent(data);
 }
