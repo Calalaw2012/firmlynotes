@@ -87,7 +87,7 @@ function TimeField({
   if (!editing) {
     return (
       <div>
-        <button type="button" onClick={openEditor} disabled={disabled} className={`${inputClasses} text-left`}>
+        <button type="button" onClick={openEditor} disabled={disabled} className={`${inputClasses} truncate text-left`}>
           {displayText ?? <span className="text-ink-faint">Choose time…</span>}
         </button>
         {durationCaption && <p className="mt-1 px-1 text-xs text-ink-faint">{durationCaption}</p>}
@@ -114,8 +114,14 @@ function TimeField({
         All day
       </label>
       {!draftAllDay && (
-        <div className="flex gap-2">
-          <label className="flex-1 text-[10px] uppercase tracking-wide text-ink-faint">
+        // Stacked, not side-by-side: two native <input type="time"> boxes
+        // in a row need more combined width than a narrow half-column card
+        // has to give (the browser's own time-picker chrome has a fairly
+        // wide minimum), which pushed this panel's right edge past the
+        // card's border. Full-width, one on top of the other, removes that
+        // overflow entirely regardless of how narrow the card gets.
+        <div className="space-y-2">
+          <label className="block text-[10px] uppercase tracking-wide text-ink-faint">
             Start
             <input
               type="time"
@@ -125,7 +131,7 @@ function TimeField({
               autoFocus
             />
           </label>
-          <label className="flex-1 text-[10px] uppercase tracking-wide text-ink-faint">
+          <label className="block text-[10px] uppercase tracking-wide text-ink-faint">
             End
             <input
               type="time"
@@ -277,12 +283,16 @@ function VideoDetails({
  * fields and validation, but each instance owns its own send/success/error
  * state instead of the whole page moving through one shared phase. "Back to
  * note" doesn't apply here (the note stays visible at all times), so it's
- * replaced with "Dismiss", which drops just this card.
+ * replaced with "Delete event", which drops just this (not-yet-sent) card.
+ * A card that's already been sent stays on screen even if its note text is
+ * later removed entirely -- deleting the real calendar event isn't
+ * something this button does.
  */
 export default function EventCard({
   event,
   status,
   error,
+  dirty,
   meetLink,
   meetPhone,
   meetPin,
@@ -294,6 +304,14 @@ export default function EventCard({
   event: ParsedEvent;
   status: EventCardStatus;
   error: string | null;
+  /**
+   * True when this card was already sent to Google Calendar, but the note
+   * has since been edited in a way that changes this same event -- e.g. the
+   * user changed the time or added an attendee in the note text. The card
+   * stays showing the real, already-created event until "Update event" is
+   * clicked, rather than a second card being created alongside it.
+   */
+  dirty: boolean;
   meetLink: string | null;
   meetPhone: string | null;
   meetPin: string | null;
@@ -308,6 +326,7 @@ export default function EventCard({
 
   const sent = status === "sent";
   const sending = status === "creating";
+  const canSubmit = !sending && Boolean(event.title.trim()) && Boolean(event.date) && !event.attendees.some((a) => !a.email);
 
   return (
     <section
@@ -315,7 +334,7 @@ export default function EventCard({
         sent ? "border-sage/40 bg-bg-elevated/60" : "border-border bg-bg-elevated"
       }`}
     >
-      {sent ? (
+      {sent && !dirty && (
         <Banner variant="success">
           Added to your calendar.
           {htmlLink && (
@@ -327,7 +346,14 @@ export default function EventCard({
             </>
           )}
         </Banner>
-      ) : (
+      )}
+      {sent && dirty && (
+        <Banner variant="info">
+          This event changed in your note since it was added to your calendar. Click "Update event" to sync
+          the change, or leave it and the calendar keeps today's original details.
+        </Banner>
+      )}
+      {!sent && (
         <div className="flex items-center justify-between gap-3">
           <h2 className="truncate text-xs font-semibold uppercase tracking-[0.08em] text-indigo-text">
             {event.title.trim() || "Untitled event"}
@@ -338,13 +364,12 @@ export default function EventCard({
             disabled={sending}
             className="shrink-0 text-xs text-ink-faint hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Dismiss
+            Delete event
           </button>
         </div>
       )}
 
       {error && <Banner variant="danger">{error}</Banner>}
-      {event.clarificationNeeded && !sent && <Banner variant="info">{event.clarificationNeeded}</Banner>}
 
       <fieldset disabled={sent || sending} className="space-y-5 disabled:opacity-60">
         <div>
@@ -430,19 +455,19 @@ export default function EventCard({
 
       {sent && meetLink && <VideoDetails meetLink={meetLink} meetPhone={meetPhone} meetPin={meetPin} />}
 
-      {!sent && (
+      {(!sent || dirty) && (
         <div className="flex items-center gap-3 pt-1">
           <button
             type="button"
             onClick={onSend}
-            disabled={sending || !event.title.trim() || !event.date || event.attendees.some((a) => !a.email)}
+            disabled={!canSubmit}
             className="rounded-[10px] border border-indigo-border bg-indigo-bg px-6 py-2.5 text-sm font-semibold text-indigo-text transition-opacity disabled:cursor-not-allowed disabled:opacity-50 hover:brightness-110"
           >
-            {sending ? "Adding…" : "Add to Calendar"}
+            {sending ? (sent ? "Updating…" : "Adding…") : sent ? "Update event" : "Add to Calendar"}
           </button>
         </div>
       )}
-      {!sent && event.attendees.some((a) => !a.email) && (
+      {(!sent || dirty) && event.attendees.some((a) => !a.email) && (
         <p className="-mt-2 text-xs text-danger">
           Fix or remove the unmatched attendee above before sending.
         </p>
