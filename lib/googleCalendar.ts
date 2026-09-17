@@ -89,6 +89,31 @@ function buildEventResource(event: ParsedEvent, timeZone: string) {
   };
 }
 
+/**
+ * Pulls a Meet conference's dial-in phone number + PIN out of Google's
+ * conferenceData.entryPoints, when present. Only Workspace plans with
+ * calling enabled get a "phone" entry point at all -- most don't -- so both
+ * come back null (not an error) whenever it's missing, same as meetLink
+ * already does for the "video" entry point.
+ */
+function extractPhoneDialIn(conferenceData: unknown): { phone: string | null; pin: string | null } {
+  const entryPoints = (conferenceData as { entryPoints?: unknown } | undefined)?.entryPoints;
+  if (!Array.isArray(entryPoints)) return { phone: null, pin: null };
+
+  const phoneEntry = entryPoints.find(
+    (e): e is { entryPointType?: string; label?: string; uri?: string; pin?: string } =>
+      typeof e === "object" && e !== null && (e as { entryPointType?: string }).entryPointType === "phone"
+  );
+  if (!phoneEntry) return { phone: null, pin: null };
+
+  // Google gives the dial-in number either as a human label ("+1 555-123-
+  // 4567") or only inside a tel: URI -- prefer the label, fall back to
+  // stripping the URI scheme.
+  const phone = phoneEntry.label || (phoneEntry.uri ? phoneEntry.uri.replace(/^tel:/, "") : null);
+  const pin = typeof phoneEntry.pin === "string" && phoneEntry.pin ? phoneEntry.pin : null;
+  return { phone: phone || null, pin };
+}
+
 export async function createCalendarEvent(
   accessToken: string,
   event: ParsedEvent,
@@ -130,5 +155,7 @@ export async function createCalendarEvent(
       ?.uri ??
     null;
 
-  return { htmlLink: data.htmlLink, id: data.id, meetLink };
+  const { phone: meetPhone, pin: meetPin } = extractPhoneDialIn(data.conferenceData);
+
+  return { htmlLink: data.htmlLink, id: data.id, meetLink, meetPhone, meetPin };
 }
