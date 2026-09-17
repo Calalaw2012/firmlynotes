@@ -22,8 +22,8 @@ export default function Header() {
             }`}
           >
             <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                session.calendarConnected ? "bg-success" : "bg-danger"
+              className={`h-1.5 w-1.5 rounded-full bg-current ${
+                session.calendarConnected ? "connected-dot" : ""
               }`}
             />
             {session.calendarConnected ? "Calendar connected" : "Reconnect needed"}
