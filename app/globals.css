@@ -117,6 +117,26 @@ button:focus-visible {
   box-shadow: 0 0 0 2px rgb(var(--color-bg)), 0 0 0 4px rgb(var(--color-indigo-border));
 }
 
+/* Every text field in the app (event title, date, the two time inputs,
+   notes, the attendee search box, the reminder dropdown) is styled at
+   Tailwind's text-sm, which is 14px -- below the 16px iOS Safari treats as
+   the line for "the user might not be able to read this," so it zooms the
+   whole page in the instant any of these fields is tapped and focused,
+   then leaves the page zoomed until the user manually pinches back out.
+   Forcing form fields specifically back up to 16px on phone-width screens
+   is the standard fix; !important is deliberate and scoped narrowly here
+   (mobile widths only, real form elements only) because a plain element
+   selector can't outrank Tailwind's own .text-sm class on specificity
+   alone, and this needs to win over whatever size utility a given field
+   happens to use. Desktop is completely unaffected. */
+@media (max-width: 640px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
 /* "Calendar connected" status dot -- a gentle brighten/dim pulse so the
    dot reads as live rather than static. Uses filter: brightness() rather
    than a second hardcoded color, so it stays correct in both light and
