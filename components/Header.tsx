@@ -63,16 +63,20 @@ export default function Header() {
       <Logo />
       {session && (
         <div className="flex flex-col items-end gap-2">
-          <div className="flex items-center gap-3">
-            {avatarUrl && (
-              <img
-                src={avatarUrl}
-                alt=""
-                referrerPolicy="no-referrer"
-                className="h-6 w-6 rounded-full border border-border-faint"
-              />
-            )}
-            <span className="rounded-pill border border-border bg-bg-elevated px-3 py-1.5 text-xs text-ink-muted">
+          {/* flex-wrap so the avatar/email/status/sign-out row breaks onto
+              a second line on a narrow phone instead of overflowing the
+              screen -- a calalaw.com email plus two pills plus a button is
+              wider than a typical phone viewport in one unbroken row. */}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className="inline-flex items-center gap-2 rounded-pill border border-border bg-bg-elevated py-1 pl-1 pr-3 text-xs text-ink-muted">
+              {avatarUrl && (
+                <img
+                  src={avatarUrl}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  className="h-8 w-8 shrink-0 rounded-full border border-border-faint"
+                />
+              )}
               {session.user?.email}
             </span>
             <span
