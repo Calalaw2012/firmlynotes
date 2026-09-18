@@ -238,7 +238,7 @@ function CopyButton({ text }: { text: string }) {
     <button
       type="button"
       onClick={handleCopy}
-      className={`shrink-0 rounded-md border px-2.5 py-1 text-xs transition-colors ${
+      className={`shrink-0 rounded-md border px-3 py-2 text-xs transition-colors ${
         copied ? "border-success text-success" : "border-border text-ink-muted hover:text-ink"
       }`}
     >
