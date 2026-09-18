@@ -510,7 +510,6 @@ export default function Home() {
       <div className="flex min-h-screen flex-col items-center justify-center px-6">
         <div className="w-full max-w-sm rounded-[20px] border border-border bg-bg-elevated px-6 py-10 text-center sm:px-10">
           <Logo size="lg" />
-          <p className="mt-6 text-balance text-ink-muted">Sign in with your firm Google account to continue.</p>
           <button
             type="button"
             onClick={() => signIn("google")}
