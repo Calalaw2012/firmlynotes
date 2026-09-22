@@ -67,6 +67,7 @@ function validateEvent(body: unknown): { event: ParsedEvent; timeZone: string; e
       attendees: attendees as Attendee[],
       addGoogleMeet: Boolean(event.addGoogleMeet),
       clarificationNeeded: null,
+      courtRules: null,
     },
   };
 }
