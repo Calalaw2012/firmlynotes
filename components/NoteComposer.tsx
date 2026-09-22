@@ -257,7 +257,7 @@ export default function NoteComposer({
     ? "processing…"
     : countdown !== null
       ? `processing… ${countdown}s`
-      : (notice ?? "Every schedulable item in the note shows up on the right, a few seconds after you stop typing.");
+      : (notice ?? "Firmly Notes creates, formats, and schedules events when typing pauses.");
 
   return (
     <div className="space-y-3">
