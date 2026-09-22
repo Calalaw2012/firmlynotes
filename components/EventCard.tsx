@@ -1,7 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import type { ParsedEvent, Reminder } from "@/types/event";
+import type { CourtRulesInfo, ParsedEvent, Reminder, RuleSetKey } from "@/types/event";
+import {
+  RULE_SET_LABELS,
+  RULE_LINKS,
+  RULE_6_LINK,
+  KNOWN_OPPOSITION_DAYS,
+  computeDeadline,
+  parseISODate,
+  formatISODate,
+  isNonCourtDay,
+} from "@/lib/courtRules";
 import AttendeesEditor from "./AttendeesEditor";
 import Banner from "./Banner";
 
@@ -277,6 +287,574 @@ function VideoDetails({
   );
 }
 
+// -- Court rules: MA court/filing deadline detection, confirm/decline, and
+// Rule 6 computation, per the approved mockup. Renders only when
+// event.courtRules is non-null -- an ordinary event is completely
+// unaffected by any of this. See
+// claude/court-rules-feature-approved-mockup-2026-09-22.md in the project
+// for the approved design and the researched rule citations.
+
+const RULE_SET_ORDER: RuleSetKey[] = ["marcp", "malandct", "masuperior", "maappellate"];
+const DOW_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+function formatLongDate(date: Date): string {
+  return date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+function sameISODay(a: Date | null, b: Date | null): boolean {
+  return Boolean(a && b && formatISODate(a) === formatISODate(b));
+}
+
+type DayState = "service" | "service-due" | "due" | "landing" | "counted" | "counted-noncourt" | "outside";
+
+function dayState(date: Date, serviceDate: Date, dueDate: Date, landingDate: Date | null): DayState {
+  if (sameISODay(date, serviceDate) && sameISODay(date, dueDate)) return "service-due";
+  if (sameISODay(date, serviceDate)) return "service";
+  if (sameISODay(date, dueDate)) return "due";
+  if (landingDate && sameISODay(date, landingDate)) return "landing";
+  if (date.getTime() > serviceDate.getTime() && date.getTime() < dueDate.getTime()) {
+    return isNonCourtDay(date) ? "counted-noncourt" : "counted";
+  }
+  return "outside";
+}
+
+function dayCellClasses(state: DayState): string {
+  switch (state) {
+    case "service":
+    case "service-due":
+      return "border-indigo-border bg-indigo-bg/50 text-ink font-bold";
+    case "due":
+      return "border-amber-border bg-amber-bg text-ink font-bold";
+    case "landing":
+      return "border-dashed border-amber-border text-ink-faint";
+    case "counted":
+      return "border-transparent bg-sage/[0.24] text-ink";
+    case "counted-noncourt":
+      return "border-transparent text-ink";
+    case "outside":
+    default:
+      return "border-transparent text-ink-faint";
+  }
+}
+
+const NONCOURT_STRIPE_STYLE = {
+  backgroundImage: "repeating-linear-gradient(45deg, rgb(var(--color-sage) / 0.4) 0 3px, transparent 3px 7px)",
+  backgroundColor: "rgb(var(--color-sage) / 0.1)",
+} as const;
+
+const NONCOURT_SWATCH_STYLE = {
+  backgroundImage: "repeating-linear-gradient(45deg, rgb(var(--color-sage) / 0.55) 0 2px, transparent 2px 5px)",
+  backgroundColor: "rgb(var(--color-sage) / 0.12)",
+} as const;
+
+function MiniCalendarMonth({
+  year,
+  month,
+  serviceDate,
+  dueDate,
+  landingDate,
+}: {
+  year: number;
+  month: number;
+  serviceDate: Date;
+  dueDate: Date;
+  landingDate: Date | null;
+}) {
+  const first = new Date(Date.UTC(year, month, 1));
+  const startDow = first.getUTCDay();
+  const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  const cells: (Date | null)[] = [
+    ...Array.from({ length: startDow }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, i) => new Date(Date.UTC(year, month, i + 1))),
+  ];
+
+  return (
+    <div>
+      <div className="mb-1.5 text-center text-[10px] font-bold uppercase tracking-wide text-ink-faint">
+        {MONTH_NAMES[month]} {year}
+      </div>
+      <div className="grid grid-cols-7 gap-[3px]">
+        {DOW_LABELS.map((label, i) => (
+          <span key={i} className="text-center text-[9px] leading-5 text-ink-faint">
+            {label}
+          </span>
+        ))}
+        {cells.map((date, i) => {
+          if (!date) return <span key={i} className="h-[22px] w-[22px]" />;
+          const state = dayState(date, serviceDate, dueDate, landingDate);
+          return (
+            <span
+              key={i}
+              className={`flex h-[22px] w-[22px] items-center justify-center rounded-md border text-[10.5px] tabular-nums ${dayCellClasses(state)}`}
+              style={state === "counted-noncourt" ? NONCOURT_STRIPE_STYLE : undefined}
+            >
+              {date.getUTCDate()}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MiniCalendar({
+  serviceDate,
+  dueDate,
+  landingDate,
+}: {
+  serviceDate: Date;
+  dueDate: Date;
+  landingDate: Date | null;
+}) {
+  if (dueDate.getTime() < serviceDate.getTime()) return null;
+
+  const months: [number, number][] = [];
+  let cur = new Date(Date.UTC(serviceDate.getUTCFullYear(), serviceDate.getUTCMonth(), 1));
+  const end = new Date(Date.UTC(dueDate.getUTCFullYear(), dueDate.getUTCMonth(), 1));
+  while (cur.getTime() <= end.getTime()) {
+    months.push([cur.getUTCFullYear(), cur.getUTCMonth()]);
+    cur = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 1));
+  }
+
+  let showNonCourtSwatch = false;
+  for (const [y, m] of months) {
+    const daysInMonth = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    for (let d = 1; d <= daysInMonth; d++) {
+      if (dayState(new Date(Date.UTC(y, m, d)), serviceDate, dueDate, landingDate) === "counted-noncourt") {
+        showNonCourtSwatch = true;
+      }
+    }
+  }
+
+  let rolledNote: string | null = null;
+  if (landingDate && !sameISODay(landingDate, dueDate)) {
+    const dow = landingDate.getUTCDay();
+    const reason = dow === 0 ? "a Sunday" : dow === 6 ? "a Saturday" : "a legal holiday";
+    rolledNote = `The count itself lands on ${formatLongDate(landingDate)} (${reason}) — Rule 6(a) rolls it forward to the next business day, ${formatLongDate(dueDate)}.`;
+  } else if (!landingDate && isNonCourtDay(dueDate)) {
+    rolledNote = `Heads up — ${formatLongDate(dueDate)} falls on a weekend or holiday. Rule 6(a) would roll a computed deadline forward automatically; a manually entered date won't move on its own.`;
+  }
+
+  return (
+    <div className="flex flex-col gap-2.5 rounded-lg border border-border-faint bg-bg-elevated p-3">
+      <div className="flex flex-wrap gap-4">
+        {months.map(([y, m]) => (
+          <MiniCalendarMonth
+            key={`${y}-${m}`}
+            year={y}
+            month={m}
+            serviceDate={serviceDate}
+            dueDate={dueDate}
+            landingDate={landingDate}
+          />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-[11px] text-ink-faint">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-3 w-3 shrink-0 rounded border border-indigo-border bg-indigo-bg/50" />
+          Service date
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-3 w-3 shrink-0 rounded bg-sage/[0.35]" />
+          Days counted
+        </span>
+        {showNonCourtSwatch && (
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-3 w-3 shrink-0 rounded" style={NONCOURT_SWATCH_STYLE} />
+            Weekend/holiday
+          </span>
+        )}
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-3 w-3 shrink-0 rounded border border-amber-border bg-amber-bg" />
+          Deadline
+        </span>
+      </div>
+      {rolledNote && <p className="text-[11.5px] leading-relaxed text-ink-muted">{rolledNote}</p>}
+    </div>
+  );
+}
+
+function DetectionBanner({ detectedCourt }: { detectedCourt: string }) {
+  return (
+    <div className="flex items-start gap-2.5 rounded-lg border border-indigo-border/45 bg-indigo-bg/55 p-3 text-[13px] leading-relaxed text-indigo-text">
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="mt-0.5 shrink-0"
+      >
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="8" x2="12" y2="12" />
+        <line x1="12" y1="16" x2="12.01" y2="16" />
+      </svg>
+      <div>
+        <b className="text-ink">{detectedCourt}</b> detected in this note. Suggested rule set below — confirm it
+        before deadlines are calculated.
+      </div>
+    </div>
+  );
+}
+
+function PendingRuleSetPicker({
+  cr,
+  disabled,
+  onRuleSetChange,
+  onConfirm,
+  onDecline,
+}: {
+  cr: CourtRulesInfo;
+  disabled: boolean;
+  onRuleSetChange: (value: RuleSetKey) => void;
+  onConfirm: () => void;
+  onDecline: () => void;
+}) {
+  const selected = cr.ruleSet;
+  const isSuggested = selected != null && selected === cr.suggestedRuleSet;
+  const link = selected ? RULE_LINKS[selected] : null;
+
+  return (
+    <div className="space-y-2.5 rounded-lg border border-indigo-border/50 bg-bg-sunken p-3.5">
+      <div className="flex items-center justify-between">
+        <label className="text-[11px] font-medium uppercase tracking-wide text-ink-faint" htmlFor="court-rule-set">
+          Court rules
+        </label>
+        {isSuggested && (
+          <span className="inline-flex items-center gap-1 rounded-pill border border-amber-border bg-amber-bg px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber">
+            Suggested
+          </span>
+        )}
+      </div>
+      <select
+        id="court-rule-set"
+        className={inputClasses}
+        value={selected ?? ""}
+        disabled={disabled}
+        onChange={(e) => onRuleSetChange(e.target.value as RuleSetKey)}
+      >
+        <option value="" disabled>
+          — Select rule set —
+        </option>
+        {RULE_SET_ORDER.map((key) => (
+          <option key={key} value={key}>
+            {RULE_SET_LABELS[key]}
+            {key === cr.suggestedRuleSet ? " (suggested)" : ""}
+          </option>
+        ))}
+      </select>
+      <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2">
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={disabled || !selected}
+          className="flex items-center gap-2 rounded-lg border border-indigo-border bg-indigo-bg px-4 py-2.5 text-[13px] font-semibold text-indigo-text transition-opacity hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+          Confirm rule set &amp; calculate deadlines
+        </button>
+        <button
+          type="button"
+          onClick={onDecline}
+          disabled={disabled}
+          className="text-xs text-ink-faint underline underline-offset-[3px] hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Not a court deadline — skip
+        </button>
+      </div>
+      <p className="text-[11.5px] leading-relaxed text-ink-faint">
+        Nothing is calculated until you confirm — the suggestion is a starting point, not an applied rule.
+      </p>
+      <div className="space-y-1 border-t border-border-faint pt-2">
+        <span className="block text-[10.5px] uppercase tracking-wide text-ink-faint">
+          Official rule text for this event
+        </span>
+        {link ? (
+          
+            href={link.url}
+            target="_blank"
+            rel="noreferrer"
+            className="block text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125"
+          >
+            {link.label}
+          </a>
+        ) : (
+          <span className="block text-xs text-ink-faint">Select a rule set above to see the specific rule that applies.</span>
+        )}
+        
+          href={RULE_6_LINK.url}
+          target="_blank"
+          rel="noreferrer"
+          className="block text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125"
+        >
+          {RULE_6_LINK.label}
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmedCascade({
+  event,
+  cr,
+  ruleSet,
+  serviceDate,
+  disabled,
+  onChangeRuleSet,
+  onManualDueDateChange,
+}: {
+  event: ParsedEvent;
+  cr: CourtRulesInfo;
+  ruleSet: RuleSetKey;
+  serviceDate: Date | null;
+  disabled: boolean;
+  onChangeRuleSet: () => void;
+  onManualDueDateChange: (value: string) => void;
+}) {
+  const link = RULE_LINKS[ruleSet];
+  const knownDays = KNOWN_OPPOSITION_DAYS[ruleSet];
+  const deadline =
+    knownDays != null && serviceDate ? computeDeadline(ruleSet, serviceDate, cr.mailOrElectronicService) : null;
+
+  return (
+    <div className="space-y-3 rounded-lg border border-border bg-bg-sunken p-3.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">
+          Deadlines — {RULE_SET_LABELS[ruleSet]}
+        </span>
+        <button
+          type="button"
+          onClick={onChangeRuleSet}
+          disabled={disabled}
+          className="text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Change rule set
+        </button>
+      </div>
+
+      {deadline && serviceDate ? (
+        <>
+          <div className="flex items-start justify-between gap-3 rounded-md border border-border-faint bg-bg-elevated p-3">
+            <div>
+              <div className="text-sm font-medium text-ink">Opposition to motion due</div>
+              <div className="mt-0.5 text-xs text-ink-faint">
+                
+                  href={link.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline underline-offset-[3px] hover:text-ink"
+                >
+                  {link.label}
+                </a>{" "}
+                · {knownDays} days after service
+              </div>
+              <div className="mt-1 text-[11px] text-sage">
+                {knownDays} days
+                {cr.mailOrElectronicService ? " + 3 days for mail/electronic service — Rule 6(d)" : ""} ={" "}
+                {deadline.effectiveDays} days, counted under{" "}
+                <a href={RULE_6_LINK.url} target="_blank" rel="noreferrer" className="underline underline-offset-[3px]">
+                  Rule 6(a)
+                </a>
+              </div>
+            </div>
+            <div className="shrink-0 text-sm font-semibold text-amber">{formatLongDate(deadline.due)}</div>
+          </div>
+
+          <MiniCalendar
+            serviceDate={serviceDate}
+            dueDate={deadline.due}
+            landingDate={deadline.rolled ? deadline.landing : null}
+          />
+        </>
+      ) : (
+        <div className="space-y-2.5">
+          <p className="text-xs leading-relaxed text-ink-muted">
+            {ruleSet === "marcp"
+              ? `${link.label} doesn't itself set an opposition deadline — that's always set by whichever court's own local rules actually apply (Superior Court Rule 9A, Land Court Rule 4, etc.). Enter the deadline by hand below.`
+              : `Enter the date served above to calculate this deadline under ${link.label}.`}
+          </p>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
+              Due date
+            </label>
+            <input
+              type="date"
+              className={inputClasses}
+              min={cr.serviceDate ?? undefined}
+              value={event.date}
+              disabled={disabled}
+              onChange={(e) => onManualDueDateChange(e.target.value)}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CourtRulesSection({
+  event,
+  disabled,
+  onChange,
+}: {
+  event: ParsedEvent;
+  disabled: boolean;
+  onChange: (event: ParsedEvent) => void;
+}) {
+  const cr = event.courtRules as CourtRulesInfo;
+
+  function patchCr(patch: Partial<CourtRulesInfo>) {
+    onChange({ ...event, courtRules: { ...cr, ...patch } });
+  }
+
+  const serviceDate = cr.serviceDate ? parseISODate(cr.serviceDate) : null;
+
+  function recomputeIfConfirmed(nextCr: CourtRulesInfo, nextServiceDate: Date | null) {
+    if (nextCr.status !== "confirmed" || !nextCr.ruleSet) {
+      onChange({ ...event, courtRules: nextCr });
+      return;
+    }
+    const deadline =
+      nextServiceDate && KNOWN_OPPOSITION_DAYS[nextCr.ruleSet] != null
+        ? computeDeadline(nextCr.ruleSet, nextServiceDate, nextCr.mailOrElectronicService)
+        : null;
+    onChange({
+      ...event,
+      date: deadline ? formatISODate(deadline.due) : event.date,
+      courtRules: nextCr,
+    });
+  }
+
+  function handleServiceDateChange(value: string) {
+    const nextServiceDate = value ? parseISODate(value) : null;
+    recomputeIfConfirmed({ ...cr, serviceDate: value || null }, nextServiceDate);
+  }
+
+  function handleMailToggle(checked: boolean) {
+    recomputeIfConfirmed({ ...cr, mailOrElectronicService: checked }, serviceDate);
+  }
+
+  function handleConfirm() {
+    if (!cr.ruleSet) return;
+    const deadline = serviceDate ? computeDeadline(cr.ruleSet, serviceDate, cr.mailOrElectronicService) : null;
+    onChange({
+      ...event,
+      date: deadline ? formatISODate(deadline.due) : cr.serviceDate ?? event.date,
+      allDay: true,
+      startTime: null,
+      endTime: null,
+      courtRules: { ...cr, status: "confirmed" },
+    });
+  }
+
+  function handleDecline() {
+    onChange({
+      ...event,
+      date: cr.serviceDate ?? event.date,
+      allDay: false,
+      startTime: null,
+      endTime: null,
+      courtRules: { ...cr, status: "declined" },
+    });
+  }
+
+  function handleBackToPending() {
+    patchCr({ status: "pending" });
+  }
+
+  function handleManualDueDateChange(value: string) {
+    onChange({ ...event, date: value });
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
+            Date served
+          </label>
+          <input
+            type="date"
+            className={inputClasses}
+            value={cr.serviceDate ?? ""}
+            disabled={disabled}
+            onChange={(e) => handleServiceDateChange(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
+            Case number
+          </label>
+          <input
+            type="text"
+            className={inputClasses}
+            placeholder="Not in the note — add it…"
+            value={cr.caseNumber}
+            disabled={disabled}
+            onChange={(e) => patchCr({ caseNumber: e.target.value })}
+          />
+        </div>
+      </div>
+
+      <label className="flex items-start gap-2.5 text-xs leading-relaxed text-ink-muted">
+        <input
+          type="checkbox"
+          className="mt-0.5 h-[15px] w-[15px] shrink-0 rounded border-border bg-bg-sunken accent-indigo-solid"
+          checked={cr.mailOrElectronicService}
+          disabled={disabled}
+          onChange={(e) => handleMailToggle(e.target.checked)}
+        />
+        <span>
+          Served by mail, email, or the Electronic Filing Service Provider{" "}
+          <span className="text-ink-faint">— adds 3 days to every deadline below (Mass. R. Civ. P. 6(d))</span>
+        </span>
+      </label>
+
+      <DetectionBanner detectedCourt={cr.detectedCourt} />
+
+      {cr.status === "pending" && (
+        <PendingRuleSetPicker
+          cr={cr}
+          disabled={disabled}
+          onRuleSetChange={(value) => patchCr({ ruleSet: value })}
+          onConfirm={handleConfirm}
+          onDecline={handleDecline}
+        />
+      )}
+
+      {cr.status === "confirmed" && cr.ruleSet && (
+        <ConfirmedCascade
+          event={event}
+          cr={cr}
+          ruleSet={cr.ruleSet}
+          serviceDate={serviceDate}
+          disabled={disabled}
+          onChangeRuleSet={handleBackToPending}
+          onManualDueDateChange={handleManualDueDateChange}
+        />
+      )}
+    </div>
+  );
+}
+
 /**
  * One independently-editable, independently-sendable event card. This is
  * the multi-event evolution of the old single-note ConfirmEventCard: same
@@ -326,7 +904,14 @@ export default function EventCard({
 
   const sent = status === "sent";
   const sending = status === "creating";
-  const canSubmit = !sending && Boolean(event.title.trim()) && Boolean(event.date) && !event.attendees.some((a) => !a.email);
+  const cr = event.courtRules;
+  const showStandardFields = !cr || cr.status === "declined";
+  const canSubmit =
+    !sending &&
+    Boolean(event.title.trim()) &&
+    Boolean(event.date) &&
+    !event.attendees.some((a) => !a.email) &&
+    cr?.status !== "pending";
 
   return (
     <section
@@ -384,76 +969,105 @@ export default function EventCard({
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
-              Date
-            </label>
-            <input
-              type="date"
-              className={inputClasses}
-              value={event.date}
-              onChange={(e) => set("date", e.target.value)}
-            />
+        {showStandardFields ? (
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
+                Date
+              </label>
+              <input
+                type="date"
+                className={inputClasses}
+                value={event.date}
+                onChange={(e) => set("date", e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
+                Time
+              </label>
+              <TimeField
+                event={event}
+                disabled={sent || sending}
+                onChange={(patch) => onChange({ ...event, ...patch })}
+              />
+            </div>
           </div>
-          <div>
-            <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
-              Time
-            </label>
-            <TimeField
-              event={event}
-              disabled={sent || sending}
-              onChange={(patch) => onChange({ ...event, ...patch })}
-            />
-          </div>
-        </div>
+        ) : (
+          <CourtRulesSection event={event} disabled={sent || sending} onChange={onChange} />
+        )}
 
-        <div>
-          <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
-            Notes
-          </label>
-          <textarea
-            className={`${inputClasses} min-h-[72px] resize-y`}
-            value={event.description}
-            onChange={(e) => set("description", e.target.value)}
-            placeholder="Optional details"
-          />
-        </div>
+        {showStandardFields && (
+          <>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
+                Notes
+              </label>
+              <textarea
+                className={`${inputClasses} min-h-[72px] resize-y`}
+                value={event.description}
+                onChange={(e) => set("description", e.target.value)}
+                placeholder="Optional details"
+              />
+            </div>
 
-        <div>
-          <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
-            Attendees
-          </label>
-          <AttendeesEditor attendees={event.attendees} onChange={(a) => set("attendees", a)} />
-        </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
+                Attendees
+              </label>
+              <AttendeesEditor attendees={event.attendees} onChange={(a) => set("attendees", a)} />
+            </div>
 
-        <div>
-          <label className="mb-1.5 flex items-center gap-2.5 text-sm text-ink-muted">
-            <input
-              type="checkbox"
-              className="h-4 w-4 rounded border-border bg-bg-sunken accent-indigo-solid"
-              checked={event.addGoogleMeet}
-              onChange={(e) => set("addGoogleMeet", e.target.checked)}
-            />
-            Add video link and conference call number
-          </label>
-          {!sent && event.addGoogleMeet && (
-            <p className="pl-6 text-xs text-ink-faint">
-              Google generates the link (and a dial-in number, if your Workspace provides one) once this
-              event is actually created — shown here right after you send it.
-            </p>
-          )}
-        </div>
+            <div>
+              <label className="mb-1.5 flex items-center gap-2.5 text-sm text-ink-muted">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-border bg-bg-sunken accent-indigo-solid"
+                  checked={event.addGoogleMeet}
+                  onChange={(e) => set("addGoogleMeet", e.target.checked)}
+                />
+                Add video link and conference call number
+              </label>
+              {!sent && event.addGoogleMeet && (
+                <p className="pl-6 text-xs text-ink-faint">
+                  Google generates the link (and a dial-in number, if your Workspace provides one) once this
+                  event is actually created — shown here right after you send it.
+                </p>
+              )}
+            </div>
 
-        <div>
-          <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
-            Reminder
-          </label>
-          <ReminderPicker reminders={event.reminders} disabled={sent || sending} onChange={(r) => set("reminders", r)} />
-        </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
+                Reminder
+              </label>
+              <ReminderPicker
+                reminders={event.reminders}
+                disabled={sent || sending}
+                onChange={(r) => set("reminders", r)}
+              />
+            </div>
+          </>
+        )}
       </fieldset>
 
       {sent && meetLink && <VideoDetails meetLink={meetLink} meetPhone={meetPhone} meetPin={meetPin} />}
+
+      {cr?.status === "declined" && !sent && (
+        <button
+          type="button"
+          onClick={() => onChange({ ...event, courtRules: { ...cr, status: "pending" } })}
+          disabled={sending}
+          className="-mt-2 text-xs text-ink-faint underline underline-offset-[3px] hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Treat as a court deadline instead
+        </button>
+      )}
+
+      {cr?.status === "pending" && (
+        <p className="-mt-2 text-xs text-ink-faint">
+          Confirm a rule set or skip court-deadline treatment above before adding this to your calendar.
+        </p>
+      )}
 
       {(!sent || dirty) && (
         <div className="flex items-center gap-3 pt-1">
