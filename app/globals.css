@@ -41,6 +41,12 @@
   --color-danger-bg: 44 26 23;
   --color-danger-border: 74 42 36;
 
+  /* Added for the court-rules feature: the "Suggested" pill, the deadline
+     date in the confirmed cascade, and the mini-calendar's due-date cell. */
+  --color-amber: 224 178 110;
+  --color-amber-bg: 54 44 22;
+  --color-amber-border: 90 71 33;
+
   --color-selection-bg: 38 44 86;
   --color-selection-text: 190 199 242;
   --color-scrollbar-thumb: 42 50 37;
@@ -75,6 +81,10 @@
     --color-danger: 193 72 58;
     --color-danger-bg: 251 234 230;
     --color-danger-border: 240 194 183;
+
+    --color-amber: 158 108 30;
+    --color-amber-bg: 250 243 225;
+    --color-amber-border: 232 214 168;
 
     --color-selection-bg: 229 232 250;
     --color-selection-text: 58 66 145;
