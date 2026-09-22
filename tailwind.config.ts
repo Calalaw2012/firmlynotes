@@ -45,6 +45,12 @@ const config: Config = {
           bg: "rgb(var(--color-danger-bg) / <alpha-value>)",
           border: "rgb(var(--color-danger-border) / <alpha-value>)",
         },
+        // Added for the court-rules feature (see components/EventCard.tsx).
+        amber: {
+          DEFAULT: "rgb(var(--color-amber) / <alpha-value>)",
+          bg: "rgb(var(--color-amber-bg) / <alpha-value>)",
+          border: "rgb(var(--color-amber-border) / <alpha-value>)",
+        },
       },
       fontFamily: {
         // Points at the CSS variable next/font injects in app/layout.tsx
