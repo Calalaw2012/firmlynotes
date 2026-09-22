@@ -1,6 +1,7 @@
-import type { Attendee, ParsedEvent, Reminder } from "@/types/event";
+import type { Attendee, CourtRulesInfo, ParsedEvent, Reminder, RuleSetKey } from "@/types/event";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const RULE_SET_KEYS: RuleSetKey[] = ["marcp", "malandct", "masuperior", "maappellate"];
 
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
 
@@ -94,6 +95,32 @@ const EVENT_ITEM_SCHEMA = {
       description:
         "One short sentence flagging anything you guessed or couldn't find for this event (e.g. no date mentioned, ambiguous time, an attendee's email wasn't in the note). Null if this event was unambiguous.",
     },
+    courtDetected: {
+      type: ["string", "null"],
+      description:
+        "The Massachusetts court name exactly as it appears in the note (e.g. 'Suffolk Superior Court', 'Land Court', 'Appeals Court'), ONLY when this event describes a court filing or litigation deadline (an opposition/response due date, a motion deadline, service of process starting a clock, etc.) -- not just any mention of a court in passing. Null for every event that isn't itself a filing/response deadline, including an ordinary court date, hearing, or meeting that happens to be at a courthouse.",
+    },
+    suggestedRuleSet: {
+      type: ["string", "null"],
+      enum: ["marcp", "malandct", "masuperior", "maappellate", null],
+      description:
+        "Only set when courtDetected is non-null. Which of the four supported Massachusetts rule sets this court maps to: 'masuperior' for any MA Superior Court, 'malandct' for the MA Land Court, 'maappellate' for the MA Appeals Court / Rules of Appellate Procedure context, 'marcp' for a general/unspecified MA trial court civil filing with no more specific court named (or an explicit Rule 12(b)(6)/civil-procedure reference). Null if courtDetected is null, or if the court doesn't clearly map to one of these four.",
+    },
+    serviceDate: {
+      type: ["string", "null"],
+      description:
+        "Only set when courtDetected is non-null. The date this event's court clock started -- service, filing, or receipt of the triggering document -- resolved to YYYY-MM-DD, ONLY if the note states one. Null if the note gives no such date; never guess or default it to the note's own date or today.",
+    },
+    mailOrElectronicService: {
+      type: "boolean",
+      description:
+        "Only meaningful when courtDetected is non-null. True (the default) unless the note clearly states personal/in-hand/hand delivery -- mail, email, and e-filing/EFSP service all get Rule 6(d)'s +3 days, so default true whenever the note doesn't specify a service method at all.",
+    },
+    caseNumber: {
+      type: "string",
+      description:
+        "Only fill in when courtDetected is non-null AND the note itself states a docket/case number verbatim. Empty string otherwise -- never invent or guess a case number.",
+    },
   },
   required: [
     "title",
@@ -104,6 +131,11 @@ const EVENT_ITEM_SCHEMA = {
     "attendees",
     "addGoogleMeet",
     "clarificationNeeded",
+    "courtDetected",
+    "suggestedRuleSet",
+    "serviceDate",
+    "mailOrElectronicService",
+    "caseNumber",
   ],
 };
 
@@ -147,6 +179,13 @@ Default scheduling when the note doesn't give an explicit clock time for an even
 1. No time information of any kind (no clock time, no "morning"/"afternoon"/"evening"/"night") -- set allDay true, leave startTime/endTime empty.
 2. An explicit clock time is given (e.g. "3pm", "10:30am") -- set allDay false, startTime to that time, and endTime to whatever duration the note states, or 60 minutes after startTime if no duration is given. A duration written as a decimal number of hours (e.g. "1.25hrs", "1.5 hours", ".75 hr") means the fractional part of an hour, not minutes -- convert it precisely (fraction x 60, rounded to the nearest minute): 1.25 hours is 1 hour 15 minutes, 1.5 hours is 1 hour 30 minutes, 0.75 hours is 45 minutes. Never read "1.25hrs" as "1 hour 25 minutes".
 3. Only a loose part-of-day word is given, no clock time -- set allDay false and use its default start/end window: "morning" -> 09:00-11:59, "afternoon" -> 12:00-16:59, "evening" or "night" -> 17:00-20:00. An explicit duration elsewhere in the note (e.g. "morning meeting, 2 hours") overrides only the window's length, keeping its start time.
+
+Court and filing deadlines (courtDetected/suggestedRuleSet/serviceDate/mailOrElectronicService/caseNumber): this firm practices in Massachusetts state courts, so flag an event as a court deadline ONLY when the note describes an actual filing/response deadline governed by MA court rules -- e.g. "served with a motion to dismiss," "opposition due," "response deadline," a docketed filing with a court named. Do NOT flag an ordinary hearing, meeting, or appointment that merely happens to be at a courthouse -- courtDetected must stay null for those. When you do flag one:
+- courtDetected is the court's name exactly as written in the note.
+- suggestedRuleSet maps it to exactly one of the four known sets (masuperior/malandct/maappellate/marcp) per the schema description above -- pick the closest match; use 'marcp' as the fallback when a MA trial-court civil filing is described but no more specific court is named.
+- serviceDate and caseNumber come ONLY from what the note actually states -- leave them null/empty rather than guessing, even though this event still needs a "date" field filled in per the rules above (that top-level date field can default to the service date if one is known, or fall back to the same today-default as any other event; a human will confirm the real deadline in the app before anything is computed, so getting this particular field slightly wrong here is low-stakes).
+- allDay should be true and startTime/endTime left empty for a court deadline event -- it's a due-by date, not a scheduled meeting.
+- This detection is a starting suggestion only, never an applied rule -- the app always requires the user to confirm or decline it, and computes the actual due date itself rather than trusting any date you provide here.
 - Always call the extract_events tool exactly once with your result. Do not respond in plain text.`;
 }
 
@@ -209,6 +248,29 @@ function normalizeEvent(raw: Record<string, unknown>, nowLocal: string): ParsedE
         .filter((a) => a.name)
     : [];
 
+  const courtDetected =
+    typeof raw.courtDetected === "string" && raw.courtDetected.trim() ? raw.courtDetected.trim() : null;
+
+  const courtRules: CourtRulesInfo | null = courtDetected
+    ? {
+        detectedCourt: courtDetected,
+        suggestedRuleSet:
+          typeof raw.suggestedRuleSet === "string" && RULE_SET_KEYS.includes(raw.suggestedRuleSet as RuleSetKey)
+            ? (raw.suggestedRuleSet as RuleSetKey)
+            : null,
+        ruleSet:
+          typeof raw.suggestedRuleSet === "string" && RULE_SET_KEYS.includes(raw.suggestedRuleSet as RuleSetKey)
+            ? (raw.suggestedRuleSet as RuleSetKey)
+            : null,
+        serviceDate:
+          typeof raw.serviceDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.serviceDate) ? raw.serviceDate : null,
+        // Defaults true (the common case) unless the model explicitly says false.
+        mailOrElectronicService: raw.mailOrElectronicService !== false,
+        caseNumber: typeof raw.caseNumber === "string" ? raw.caseNumber.trim() : "",
+        status: "pending",
+      }
+    : null;
+
   return {
     title: typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : "Untitled note",
     description: typeof raw.description === "string" ? raw.description : "",
@@ -223,6 +285,7 @@ function normalizeEvent(raw: Record<string, unknown>, nowLocal: string): ParsedE
       typeof raw.clarificationNeeded === "string" && raw.clarificationNeeded.trim()
         ? raw.clarificationNeeded.trim()
         : null,
+    courtRules,
   };
 }
 
