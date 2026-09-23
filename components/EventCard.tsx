@@ -1,18 +1,22 @@
 "use client";
 
 import { useState } from "react";
-import type { CourtRulesInfo, ParsedEvent, Reminder, RuleSetKey } from "@/types/event";
+import type { Attendee, CourtRulesInfo, ParsedEvent, Reminder, RuleSetKey } from "@/types/event";
 import {
   RULE_SET_LABELS,
   RULE_LINKS,
   RULE_6_LINK,
+  SUPERIOR_SUMMARY_JUDGMENT_LINK,
   KNOWN_OPPOSITION_DAYS,
   computeDeadline,
+  isSummaryJudgmentMotion,
+  buildCourtDeadlineDescription,
   parseISODate,
   formatISODate,
   isNonCourtDay,
 } from "@/lib/courtRules";
 import AttendeesEditor from "./AttendeesEditor";
+import RemindersEditor from "./RemindersEditor";
 import Banner from "./Banner";
 
 const inputClasses =
@@ -163,65 +167,6 @@ function TimeField({
   );
 }
 
-// -- Reminder: a single preset dropdown (replaces the old multi-reminder,
-// popup/email-toggling editor), per the approved mockup. Still stored as a
-// Reminder[] under the hood (always length 0 or 1) so the API contract and
-// Google Calendar integration don't need to change.
-
-const REMINDER_PRESETS: { label: string; minutesBefore: number | null }[] = [
-  { label: "None", minutesBefore: null },
-  { label: "At time of event", minutesBefore: 0 },
-  { label: "5 minutes before", minutesBefore: 5 },
-  { label: "10 minutes before", minutesBefore: 10 },
-  { label: "15 minutes before", minutesBefore: 15 },
-  { label: "30 minutes before", minutesBefore: 30 },
-  { label: "1 hour before", minutesBefore: 60 },
-  { label: "2 hours before", minutesBefore: 120 },
-  { label: "1 day before", minutesBefore: 1440 },
-  { label: "2 days before", minutesBefore: 2880 },
-];
-
-function reminderLabelFor(reminders: Reminder[]): string {
-  if (reminders.length === 0) return "None";
-  const minutesBefore = reminders[0].minutesBefore;
-  const preset = REMINDER_PRESETS.find((p) => p.minutesBefore === minutesBefore);
-  if (preset) return preset.label;
-  return minutesBefore % 60 === 0 ? `${minutesBefore / 60} hr before` : `${minutesBefore} min before`;
-}
-
-function ReminderPicker({
-  reminders,
-  disabled,
-  onChange,
-}: {
-  reminders: Reminder[];
-  disabled: boolean;
-  onChange: (reminders: Reminder[]) => void;
-}) {
-  const currentLabel = reminderLabelFor(reminders);
-  const knownLabels = new Set(REMINDER_PRESETS.map((p) => p.label));
-
-  return (
-    <select
-      className={inputClasses}
-      disabled={disabled}
-      value={currentLabel}
-      onChange={(e) => {
-        const preset = REMINDER_PRESETS.find((p) => p.label === e.target.value);
-        if (!preset) return;
-        onChange(preset.minutesBefore === null ? [] : [{ method: "popup", minutesBefore: preset.minutesBefore }]);
-      }}
-    >
-      {REMINDER_PRESETS.map((p) => (
-        <option key={p.label} value={p.label}>
-          {p.label}
-        </option>
-      ))}
-      {!knownLabels.has(currentLabel) && <option value={currentLabel}>{currentLabel}</option>}
-    </select>
-  );
-}
-
 // -- Video details: shown once the event is actually sent and Google
 // returned a Meet link. Phone dial-in + PIN only render when the Workspace
 // happens to provision one -- most don't, and there's no way to know before
@@ -288,11 +233,17 @@ function VideoDetails({
 }
 
 // -- Court rules: MA court/filing deadline detection, confirm/decline, and
-// Rule 6 computation, per the approved mockup. Renders only when
-// event.courtRules is non-null -- an ordinary event is completely
-// unaffected by any of this. See
+// Rule 6 computation, per the approved mockup -- extended per follow-up
+// feedback with a live "Event description" preview (built from what was
+// served + the service date, exactly what gets saved to Google), a
+// multi-reminder editor and an attendees editor once confirmed (previously
+// neither was exposed for a court-deadline event at all), and a Superior
+// Court summary-judgment switch (Rule 9A(b)(1)'s 21-day opposition period
+// instead of Rule 9A(b)(4)'s general 10-day one, read off what was
+// served). Renders only when event.courtRules is non-null -- an ordinary
+// event is completely unaffected by any of this. See
 // claude/court-rules-feature-approved-mockup-2026-09-22.md in the project
-// for the approved design and the researched rule citations.
+// for the original approved design and the researched rule citations.
 
 const RULE_SET_ORDER: RuleSetKey[] = ["marcp", "malandct", "masuperior", "maappellate"];
 const DOW_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
@@ -307,6 +258,11 @@ function formatLongDate(date: Date): string {
 
 function sameISODay(a: Date | null, b: Date | null): boolean {
   return Boolean(a && b && formatISODate(a) === formatISODate(b));
+}
+
+/** True when a confirmed Superior Court deadline should use Rule 9A(b)(1)'s 21-day summary-judgment track instead of 9A(b)(4)'s general 10-day one -- see isSummaryJudgmentMotion in lib/courtRules.ts. */
+function courtRulesIsSummaryJudgment(cr: CourtRulesInfo): boolean {
+  return cr.ruleSet === "masuperior" && isSummaryJudgmentMotion(cr.documentServed);
 }
 
 type DayState = "service" | "service-due" | "due" | "landing" | "counted" | "counted-noncourt" | "outside";
@@ -588,7 +544,7 @@ function PendingRuleSetPicker({
           Official rule text for this event
         </span>
         {link ? (
-          <a
+          
             href={link.url}
             target="_blank"
             rel="noreferrer"
@@ -599,7 +555,7 @@ function PendingRuleSetPicker({
         ) : (
           <span className="block text-xs text-ink-faint">Select a rule set above to see the specific rule that applies.</span>
         )}
-         <a
+        
           href={RULE_6_LINK.url}
           target="_blank"
           rel="noreferrer"
@@ -620,6 +576,8 @@ function ConfirmedCascade({
   disabled,
   onChangeRuleSet,
   onManualDueDateChange,
+  onAttendeesChange,
+  onRemindersChange,
 }: {
   event: ParsedEvent;
   cr: CourtRulesInfo;
@@ -628,11 +586,14 @@ function ConfirmedCascade({
   disabled: boolean;
   onChangeRuleSet: () => void;
   onManualDueDateChange: (value: string) => void;
+  onAttendeesChange: (attendees: Attendee[]) => void;
+  onRemindersChange: (reminders: Reminder[]) => void;
 }) {
-  const link = RULE_LINKS[ruleSet];
+  const isSJ = courtRulesIsSummaryJudgment(cr);
+  const link = isSJ ? SUPERIOR_SUMMARY_JUDGMENT_LINK : RULE_LINKS[ruleSet];
   const knownDays = KNOWN_OPPOSITION_DAYS[ruleSet];
   const deadline =
-    knownDays != null && serviceDate ? computeDeadline(ruleSet, serviceDate, cr.mailOrElectronicService) : null;
+    knownDays != null && serviceDate ? computeDeadline(ruleSet, serviceDate, cr.mailOrElectronicService, isSJ) : null;
 
   return (
     <div className="space-y-3 rounded-lg border border-border bg-bg-sunken p-3.5">
@@ -650,13 +611,32 @@ function ConfirmedCascade({
         </button>
       </div>
 
+      {ruleSet === "masuperior" && (
+        <p className="text-[11px] leading-relaxed text-ink-faint">
+          {isSJ
+            ? "Detected as a summary-judgment motion — using Rule 9A(b)(1)'s 21-day opposition period instead of the general 10-day track."
+            : `Using Rule 9A(b)(4)'s general 10-day opposition period. Mentioning "summary judgment" in the document served below switches this to Rule 9A(b)(1)'s 21-day period.`}
+        </p>
+      )}
+
+      <div className="rounded-md border border-border-faint bg-bg-elevated p-3">
+        <div className="mb-1 text-[10.5px] uppercase tracking-wide text-ink-faint">Event description</div>
+        <p className="text-xs leading-relaxed text-ink">
+          {event.description || (
+            <span className="text-ink-faint">
+              Add the type of document served above to build the calendar description.
+            </span>
+          )}
+        </p>
+      </div>
+
       {deadline && serviceDate ? (
         <>
           <div className="flex items-start justify-between gap-3 rounded-md border border-border-faint bg-bg-elevated p-3">
             <div>
               <div className="text-sm font-medium text-ink">Opposition to motion due</div>
               <div className="mt-0.5 text-xs text-ink-faint">
-                <a
+                
                   href={link.url}
                   target="_blank"
                   rel="noreferrer"
@@ -664,10 +644,10 @@ function ConfirmedCascade({
                 >
                   {link.label}
                 </a>{" "}
-                · {knownDays} days after service
+                · {deadline.baseDays} days after service
               </div>
               <div className="mt-1 text-[11px] text-sage">
-                {knownDays} days
+                {deadline.baseDays} days
                 {cr.mailOrElectronicService ? " + 3 days for mail/electronic service — Rule 6(d)" : ""} ={" "}
                 {deadline.effectiveDays} days, counted under{" "}
                 <a href={RULE_6_LINK.url} target="_blank" rel="noreferrer" className="underline underline-offset-[3px]">
@@ -706,6 +686,20 @@ function ConfirmedCascade({
           </div>
         </div>
       )}
+
+      <div>
+        <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
+          Attendees
+        </label>
+        <AttendeesEditor attendees={event.attendees} onChange={onAttendeesChange} />
+      </div>
+
+      <div>
+        <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
+          Reminders
+        </label>
+        <RemindersEditor reminders={event.reminders} onChange={onRemindersChange} />
+      </div>
     </div>
   );
 }
@@ -734,11 +728,12 @@ function CourtRulesSection({
     }
     const deadline =
       nextServiceDate && KNOWN_OPPOSITION_DAYS[nextCr.ruleSet] != null
-        ? computeDeadline(nextCr.ruleSet, nextServiceDate, nextCr.mailOrElectronicService)
+        ? computeDeadline(nextCr.ruleSet, nextServiceDate, nextCr.mailOrElectronicService, courtRulesIsSummaryJudgment(nextCr))
         : null;
     onChange({
       ...event,
       date: deadline ? formatISODate(deadline.due) : event.date,
+      description: buildCourtDeadlineDescription(nextCr.documentServed, nextCr.serviceDate),
       courtRules: nextCr,
     });
   }
@@ -748,20 +743,28 @@ function CourtRulesSection({
     recomputeIfConfirmed({ ...cr, serviceDate: value || null }, nextServiceDate);
   }
 
+  function handleDocumentServedChange(value: string) {
+    recomputeIfConfirmed({ ...cr, documentServed: value }, serviceDate);
+  }
+
   function handleMailToggle(checked: boolean) {
     recomputeIfConfirmed({ ...cr, mailOrElectronicService: checked }, serviceDate);
   }
 
   function handleConfirm() {
     if (!cr.ruleSet) return;
-    const deadline = serviceDate ? computeDeadline(cr.ruleSet, serviceDate, cr.mailOrElectronicService) : null;
+    const deadline = serviceDate
+      ? computeDeadline(cr.ruleSet, serviceDate, cr.mailOrElectronicService, courtRulesIsSummaryJudgment(cr))
+      : null;
+    const confirmedCr: CourtRulesInfo = { ...cr, status: "confirmed" };
     onChange({
       ...event,
       date: deadline ? formatISODate(deadline.due) : cr.serviceDate ?? event.date,
+      description: buildCourtDeadlineDescription(confirmedCr.documentServed, confirmedCr.serviceDate),
       allDay: true,
       startTime: null,
       endTime: null,
-      courtRules: { ...cr, status: "confirmed" },
+      courtRules: confirmedCr,
     });
   }
 
@@ -784,6 +787,14 @@ function CourtRulesSection({
     onChange({ ...event, date: value });
   }
 
+  function handleAttendeesChange(attendees: Attendee[]) {
+    onChange({ ...event, attendees });
+  }
+
+  function handleRemindersChange(reminders: Reminder[]) {
+    onChange({ ...event, reminders });
+  }
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
@@ -801,17 +812,31 @@ function CourtRulesSection({
         </div>
         <div>
           <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
-            Case number
+            Type of document served
           </label>
           <input
             type="text"
             className={inputClasses}
-            placeholder="Not in the note — add it…"
-            value={cr.caseNumber}
+            placeholder="e.g. Motion to Dismiss"
+            value={cr.documentServed}
             disabled={disabled}
-            onChange={(e) => patchCr({ caseNumber: e.target.value })}
+            onChange={(e) => handleDocumentServedChange(e.target.value)}
           />
         </div>
+      </div>
+
+      <div>
+        <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
+          Case number
+        </label>
+        <input
+          type="text"
+          className={inputClasses}
+          placeholder="Not in the note — add it…"
+          value={cr.caseNumber}
+          disabled={disabled}
+          onChange={(e) => patchCr({ caseNumber: e.target.value })}
+        />
       </div>
 
       <label className="flex items-start gap-2.5 text-xs leading-relaxed text-ink-muted">
@@ -849,6 +874,8 @@ function CourtRulesSection({
           disabled={disabled}
           onChangeRuleSet={handleBackToPending}
           onManualDueDateChange={handleManualDueDateChange}
+          onAttendeesChange={handleAttendeesChange}
+          onRemindersChange={handleRemindersChange}
         />
       )}
     </div>
@@ -1038,13 +1065,9 @@ export default function EventCard({
 
             <div>
               <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
-                Reminder
+                Reminders
               </label>
-              <ReminderPicker
-                reminders={event.reminders}
-                disabled={sent || sending}
-                onChange={(r) => set("reminders", r)}
-              />
+              <RemindersEditor reminders={event.reminders} onChange={(r) => set("reminders", r)} />
             </div>
           </>
         )}
