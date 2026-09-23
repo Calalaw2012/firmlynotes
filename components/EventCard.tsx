@@ -24,12 +24,6 @@ const inputClasses =
 
 export type EventCardStatus = "draft" | "creating" | "sent" | "error";
 
-// -- Time field: a single click-to-edit range picker (replaces the old
-// All-day checkbox + always-visible Start/End boxes), per the approved
-// mockup. Duration is no longer its own editable field -- it's a read-only
-// caption computed from Start/End, changed only by editing End (or Start,
-// which just moves the whole range and leaves the length alone).
-
 function formatTimeDisplay(hhmm: string): string {
   const [hStr, mStr] = hhmm.split(":");
   let h = parseInt(hStr, 10);
@@ -43,7 +37,7 @@ function minutesBetween(start: string, end: string): number {
   const [sh, sm] = start.split(":").map(Number);
   const [eh, em] = end.split(":").map(Number);
   let diff = eh * 60 + em - (sh * 60 + sm);
-  if (diff <= 0) diff += 24 * 60; // end reads as the next day (e.g. 11pm - 1am)
+  if (diff <= 0) diff += 24 * 60;
   return diff;
 }
 
@@ -113,8 +107,6 @@ function TimeField({
     <div
       className="space-y-2 rounded-lg border border-indigo-border bg-bg-sunken p-2.5"
       onBlur={(e) => {
-        // Commit only once focus actually leaves this whole editor block,
-        // not on every individual input blurring to the next one inside it.
         if (!e.currentTarget.contains(e.relatedTarget as Node)) commit();
       }}
     >
@@ -128,12 +120,6 @@ function TimeField({
         All day
       </label>
       {!draftAllDay && (
-        // Stacked, not side-by-side: two native <input type="time"> boxes
-        // in a row need more combined width than a narrow half-column card
-        // has to give (the browser's own time-picker chrome has a fairly
-        // wide minimum), which pushed this panel's right edge past the
-        // card's border. Full-width, one on top of the other, removes that
-        // overflow entirely regardless of how narrow the card gets.
         <div className="space-y-2">
           <label className="block text-[10px] uppercase tracking-wide text-ink-faint">
             Start
@@ -167,13 +153,6 @@ function TimeField({
   );
 }
 
-// -- Video details: shown once the event is actually sent and Google
-// returned a Meet link. Phone dial-in + PIN only render when the Workspace
-// happens to provision one -- most don't, and there's no way to know before
-// the event is created, so (unlike the mockup, which fakes a link the
-// instant the checkbox is checked) this only ever shows real data, after a
-// real send.
-
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
 
@@ -181,8 +160,6 @@ function CopyButton({ text }: { text: string }) {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
-      // Clipboard access can be blocked (permissions, non-secure context);
-      // the button just won't flash "Copied" in that case.
       return;
     }
     setCopied(true);
@@ -232,19 +209,6 @@ function VideoDetails({
   );
 }
 
-// -- Court rules: MA court/filing deadline detection, confirm/decline, and
-// Rule 6 computation, per the approved mockup -- extended per follow-up
-// feedback with a live "Event description" preview (built from what was
-// served + the service date, exactly what gets saved to Google), a
-// multi-reminder editor and an attendees editor once confirmed (previously
-// neither was exposed for a court-deadline event at all), and a Superior
-// Court summary-judgment switch (Rule 9A(b)(1)'s 21-day opposition period
-// instead of Rule 9A(b)(4)'s general 10-day one, read off what was
-// served). Renders only when event.courtRules is non-null -- an ordinary
-// event is completely unaffected by any of this. See
-// claude/court-rules-feature-approved-mockup-2026-09-22.md in the project
-// for the original approved design and the researched rule citations.
-
 const RULE_SET_ORDER: RuleSetKey[] = ["marcp", "malandct", "masuperior", "maappellate"];
 const DOW_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
 const MONTH_NAMES = [
@@ -260,7 +224,6 @@ function sameISODay(a: Date | null, b: Date | null): boolean {
   return Boolean(a && b && formatISODate(a) === formatISODate(b));
 }
 
-/** True when a confirmed Superior Court deadline should use Rule 9A(b)(1)'s 21-day summary-judgment track instead of 9A(b)(4)'s general 10-day one -- see isSummaryJudgmentMotion in lib/courtRules.ts. */
 function courtRulesIsSummaryJudgment(cr: CourtRulesInfo): boolean {
   return cr.ruleSet === "masuperior" && isSummaryJudgmentMotion(cr.documentServed);
 }
@@ -882,17 +845,6 @@ function CourtRulesSection({
   );
 }
 
-/**
- * One independently-editable, independently-sendable event card. This is
- * the multi-event evolution of the old single-note ConfirmEventCard: same
- * fields and validation, but each instance owns its own send/success/error
- * state instead of the whole page moving through one shared phase. "Back to
- * note" doesn't apply here (the note stays visible at all times), so it's
- * replaced with "Delete event", which drops just this (not-yet-sent) card.
- * A card that's already been sent stays on screen even if its note text is
- * later removed entirely -- deleting the real calendar event isn't
- * something this button does.
- */
 export default function EventCard({
   event,
   status,
@@ -909,13 +861,6 @@ export default function EventCard({
   event: ParsedEvent;
   status: EventCardStatus;
   error: string | null;
-  /**
-   * True when this card was already sent to Google Calendar, but the note
-   * has since been edited in a way that changes this same event -- e.g. the
-   * user changed the time or added an attendee in the note text. The card
-   * stays showing the real, already-created event until "Update event" is
-   * clicked, rather than a second card being created alongside it.
-   */
   dirty: boolean;
   meetLink: string | null;
   meetPhone: string | null;
