@@ -8,7 +8,8 @@ import NoteComposer from "@/components/NoteComposer";
 import EventCard, { type EventCardStatus } from "@/components/EventCard";
 import RecentList, { type RecentEntry } from "@/components/RecentList";
 import Banner from "@/components/Banner";
-import type { Attendee, ParsedEvent, Reminder } from "@/types/event";
+import type { Attendee, CourtRulesInfo, ParsedEvent, Reminder } from "@/types/event";
+import { buildCourtDeadlineDescription, computeDeadline, formatISODate, isSummaryJudgmentMotion, parseISODate } from "@/lib/courtRules";
 
 const PARSE_DEBOUNCE_MS = 5000;
 const MIN_LENGTH_TO_PARSE = 12;
@@ -16,7 +17,6 @@ const MIN_LENGTH_TO_PARSE = 12;
 interface CardState {
   id: string;
   event: ParsedEvent;
-  userEdited: boolean;
   status: EventCardStatus;
   error: string | null;
   /** Google Calendar's own id for this event, once it's been sent at least once. */
@@ -79,7 +79,12 @@ function makeCardId(): string {
  * Fills in emails for attendees the parser only got a name for, by looking
  * each one up against the user's Google contacts. Leaves an attendee alone
  * (email stays "") when there's no match — the card surfaces that so the
- * user can fix it by hand.
+ * user can fix it by hand. (A previously-remembered name -> email alias
+ * is also tried here via the aliasEmail the search API returns, but most
+ * of the time an alias has already been applied earlier -- either by
+ * /api/parse-note for a freshly parsed note, or by this same function the
+ * first time this attendee was seen -- so this is mainly the Google-
+ * contacts fallback for a name that's never been resolved before.)
  */
 async function resolveAttendees(attendees: Attendee[]): Promise<Attendee[]> {
   return Promise.all(
@@ -149,11 +154,100 @@ function eventsEqual(a: ParsedEvent, b: ParsedEvent): boolean {
 }
 
 /**
+ * Re-runs the same due-date + description computation the confirmed-state
+ * card itself does (ConfirmedCascade / handleConfirm in EventCard.tsx),
+ * from whatever CourtRulesInfo a merge just produced. Used only when a
+ * fresh parse is being folded into an already-*confirmed* card -- see
+ * mergeParsedEventIntoCard -- so a correction to the service date or
+ * document served in the note text recomputes the deadline the same way
+ * editing those fields directly in the card would, instead of the card
+ * quietly going stale.
+ */
+function recomputeCourtRules(event: ParsedEvent): ParsedEvent {
+  const cr = event.courtRules;
+  if (!cr || cr.status !== "confirmed" || !cr.ruleSet) return event;
+  const serviceDate = cr.serviceDate ? parseISODate(cr.serviceDate) : null;
+  const isSJ = cr.ruleSet === "masuperior" && isSummaryJudgmentMotion(cr.documentServed);
+  const deadline = serviceDate ? computeDeadline(cr.ruleSet, serviceDate, cr.mailOrElectronicService, isSJ) : null;
+  return {
+    ...event,
+    date: deadline ? formatISODate(deadline.due) : event.date,
+    allDay: true,
+    startTime: null,
+    endTime: null,
+    description: buildCourtDeadlineDescription(cr.documentServed, cr.serviceDate),
+    courtRules: cr,
+  };
+}
+
+/**
+ * Folds a freshly re-parsed version of an event into what's currently on a
+ * card. A plain re-parse (nothing decided yet, or this was never a court-
+ * deadline event) is fully authoritative -- the fresh version replaces the
+ * old one outright, which is what lets editing the note text actually
+ * correct a still-pending card (see reconcileCards' doc comment / eligible
+ * below).
+ *
+ * Once the user has confirmed or declined a court-deadline decision,
+ * though, that decision -- and the attendees/reminders they've set on the
+ * card -- are worth more than a guess from re-running the extractor, so
+ * they're carried forward rather than overwritten: the decision itself
+ * (status, the confirmed rule set), and the attendees/reminders lists,
+ * survive the merge untouched, while the underlying facts a note
+ * correction is actually meant to fix (service date, document served,
+ * mail/electronic service, case number, the detected-court text, and for
+ * an ordinary event's title/date/time/notes) come from the fresh parse.
+ * A confirmed deadline's due date and description are then recomputed
+ * from the merged facts, exactly as if the user had re-confirmed by hand.
+ */
+function mergeParsedEventIntoCard(current: ParsedEvent, fresh: ParsedEvent): ParsedEvent {
+  const currentCr = current.courtRules;
+  if (!currentCr || currentCr.status === "pending") {
+    // Nothing decided yet -- the fresh parse is authoritative. (Also
+    // covers an ordinary, non-court event, where courtRules is null.)
+    return { ...fresh, attendees: current.attendees, reminders: current.reminders };
+  }
+
+  const freshCr = fresh.courtRules;
+  const mergedCr: CourtRulesInfo = freshCr
+    ? {
+        ...freshCr,
+        ruleSet: currentCr.ruleSet,
+        status: currentCr.status,
+        // Case number and document type are as likely to have been typed
+        // by hand in the card as stated in the note -- keep whichever one
+        // isn't blank, preferring the user's own entry.
+        caseNumber: currentCr.caseNumber || freshCr.caseNumber,
+        documentServed: currentCr.documentServed || freshCr.documentServed,
+      }
+    : // The note no longer reads as a court deadline at all (e.g. the
+      // "served with..." sentence was reworded away) -- keep the
+      // decision that was already made rather than silently dropping it.
+      { ...currentCr };
+
+  const merged: ParsedEvent = {
+    ...fresh,
+    attendees: current.attendees,
+    reminders: current.reminders,
+    courtRules: mergedCr,
+  };
+
+  return currentCr.status === "confirmed" ? recomputeCourtRules(merged) : merged;
+}
+
+/**
  * Merges a fresh parse-note result into the existing card list without
- * disturbing cards the user has already started editing, or that are
- * mid-send right now. An event matching a dismissed signature is skipped so
- * a card the user dismissed doesn't silently reappear while they keep
- * typing around it.
+ * disturbing cards that are mid-send right now. An event matching a
+ * dismissed signature is skipped so a card the user dismissed doesn't
+ * silently reappear while they keep typing around it.
+ *
+ * A pending (not yet sent) card keeps tracking the note: editing the note
+ * text for an event that already has a card -- fixing a date, adding a
+ * detail, correcting a court deadline's service date -- updates that same
+ * card instead of leaving it stale or spawning a duplicate. The one thing
+ * a re-parse never does is quietly re-open a court-deadline decision the
+ * user already made (confirm or decline) or wipe out the attendees/
+ * reminders they've set on the card -- see mergeParsedEventIntoCard.
  *
  * A card that was already sent can still be matched: if the freshly parsed
  * version of that same event differs from what's on the card (a changed
@@ -165,21 +259,24 @@ function eventsEqual(a: ParsedEvent, b: ParsedEvent): boolean {
  *
  * Matching runs in four increasingly loose passes, each only considering
  * cards/events the previous pass didn't already claim:
- *   1. date + normalized title both match (the strongest signal).
- *   2. same date, title changed -- e.g. the note now phrases the same
- *      meeting slightly differently.
- *   3. same title, date changed -- e.g. "Tuesday" was corrected to
- *      "Thursday" but it's still described the same way.
- *   4. last resort: if editing the note changed BOTH the date and the
- *      title at once (nothing left in common to match on), and there's
- *      exactly one already-sent card with nothing matched and exactly one
- *      freshly parsed event nothing has claimed, treat them as the same
- *      event -- there's no real ambiguity about what happened to it when
- *      it's the only candidate on both sides. This pass is skipped
- *      whenever more than one card or event is left over, since guessing
- *      wrong there would silently misapply an edit to the wrong calendar
- *      entry, which is worse than the duplicate-card problem this whole
- *      function exists to prevent.
+ * 1. date + normalized title both match (the strongest signal).
+ * 2. same date, title changed -- e.g. the note now phrases the same
+ *    meeting slightly differently.
+ * 3. same title, date changed -- e.g. "Tuesday" was corrected to
+ *    "Thursday" but it's still described the same way. This is also the
+ *    pass that catches a confirmed court deadline: its own event.date is
+ *    the *computed due date*, not whatever raw date a fresh parse guesses,
+ *    so only the still-matching title reliably links them back up.
+ * 4. last resort: if editing the note changed BOTH the date and the
+ *    title at once (nothing left in common to match on), and there's
+ *    exactly one card with nothing matched and exactly one freshly
+ *    parsed event nothing has claimed, treat them as the same event --
+ *    there's no real ambiguity about what happened to it when it's the
+ *    only candidate on both sides. This pass is skipped whenever more
+ *    than one card or event is left over, since guessing wrong there
+ *    would silently misapply an edit to the wrong card, which is worse
+ *    than the duplicate-card problem this whole function exists to
+ *    prevent.
  */
 function reconcileCards(prevCards: CardState[], events: ParsedEvent[], dismissed: Set<string>): CardState[] {
   const usedNew = new Set<number>();
@@ -187,20 +284,19 @@ function reconcileCards(prevCards: CardState[], events: ParsedEvent[], dismissed
   const next = prevCards.map((c) => ({ ...c }));
 
   function applyMatch(card: CardState, matched: ParsedEvent) {
+    const merged = mergeParsedEventIntoCard(card.event, matched);
     if (card.status === "sent") {
-      if (!eventsEqual(card.event, matched)) {
-        card.event = matched;
+      if (!eventsEqual(card.event, merged)) {
+        card.event = merged;
         card.dirty = true;
       }
     } else {
-      card.event = matched;
+      card.event = merged;
     }
   }
 
   function eligible(card: CardState): boolean {
-    if (card.status === "creating") return false;
-    if (card.status !== "sent" && card.userEdited) return false;
-    return true;
+    return card.status !== "creating";
   }
 
   // Pass 1: date + normalized title both match.
@@ -234,7 +330,9 @@ function reconcileCards(prevCards: CardState[], events: ParsedEvent[], dismissed
   // this pass, simply correcting an event's day (keeping the same title)
   // matched nothing at all, since pass 1 needs both and pass 2 needs the
   // date to still agree -- which is exactly the gap that was producing a
-  // second, duplicate card any time the date portion of a note changed.
+  // second, duplicate card any time the date portion of a note changed
+  // (or, for a confirmed court deadline, every single re-parse, since its
+  // date is the computed due date rather than the note's raw guess).
   for (const card of next) {
     if (!eligible(card) || matchedPrev.has(card.id)) continue;
     const idx = events.findIndex(
@@ -248,10 +346,10 @@ function reconcileCards(prevCards: CardState[], events: ParsedEvent[], dismissed
   }
 
   // Pass 4: last-resort singleton fallback -- see the function doc comment.
-  const stillUnmatchedSent = next.filter((c) => c.status === "sent" && !matchedPrev.has(c.id));
+  const stillUnmatched = next.filter((c) => eligible(c) && !matchedPrev.has(c.id));
   const stillUnusedEvents = events.map((e, ei) => ({ e, ei })).filter(({ ei }) => !usedNew.has(ei));
-  if (stillUnmatchedSent.length === 1 && stillUnusedEvents.length === 1) {
-    const card = stillUnmatchedSent[0];
+  if (stillUnmatched.length === 1 && stillUnusedEvents.length === 1) {
+    const card = stillUnmatched[0];
     const { e, ei } = stillUnusedEvents[0];
     usedNew.add(ei);
     matchedPrev.add(card.id);
@@ -265,7 +363,6 @@ function reconcileCards(prevCards: CardState[], events: ParsedEvent[], dismissed
     .map(({ e }) => ({
       id: makeCardId(),
       event: e,
-      userEdited: false,
       status: "draft" as const,
       error: null,
       googleEventId: null,
@@ -372,7 +469,11 @@ export default function Home() {
 
   // Resolve name-only attendees against Google contacts as soon as a fresh
   // draft card appears, rather than waiting until the user reaches for
-  // "Add to Calendar" to discover something didn't match.
+  // "Add to Calendar" to discover something didn't match. /api/parse-note
+  // already applies any name the user has previously resolved (see
+  // lib/attendeeAliases.ts), so most of what reaches this effect is either
+  // a genuinely new name or one only the fuller Google-contacts search
+  // below can match.
   useEffect(() => {
     cards.forEach((card) => {
       if (resolvedRef.current.has(card.id)) return;
@@ -380,9 +481,7 @@ export default function Home() {
       if (card.event.attendees.every((a) => a.email)) return;
       resolvedRef.current.add(card.id);
       resolveAttendees(card.event.attendees).then((attendees) => {
-        setCards((prev) =>
-          prev.map((c) => (c.id === card.id && !c.userEdited ? { ...c, event: { ...c.event, attendees } } : c))
-        );
+        setCards((prev) => prev.map((c) => (c.id === card.id ? { ...c, event: { ...c.event, attendees } } : c)));
       });
     });
   }, [cards]);
@@ -404,7 +503,7 @@ export default function Home() {
   }
 
   function updateCard(id: string, event: ParsedEvent) {
-    setCards((prev) => prev.map((c) => (c.id === id ? { ...c, event, userEdited: true } : c)));
+    setCards((prev) => prev.map((c) => (c.id === id ? { ...c, event } : c)));
   }
 
   function dismissCard(id: string) {
