@@ -55,7 +55,7 @@ const EVENT_ITEM_SCHEMA = {
     reminders: {
       type: "array",
       description:
-        "Reminders to set for this event. If the note specifies none, default to a single popup reminder 30 minutes before.",
+        "Reminders to set for this event. If the note specifies none, default to a single popup reminder 30 minutes before. If the note asks for more than one reminder for the same event, return one array entry per reminder it asks for -- don't collapse several stated reminders into just one.",
       items: {
         type: "object",
         properties: {
@@ -68,7 +68,7 @@ const EVENT_ITEM_SCHEMA = {
     attendees: {
       type: "array",
       description:
-        "People to actually invite to this event -- extracted ONLY from phrases that clearly show participation, like 'with Sarah', 'invite the Hendricks', 'cc opposing counsel', 'meet with John', 'Monica and Peter to attend', 'attendees: Monica, Peter', 'X and Y will be there'. A person's name showing up elsewhere in the note -- as part of a case/matter name, party name, or subject line (e.g. 'Smith v. Jones', 'the Dillon matter', 're: Johnson deposition') -- is NOT by itself a reason to add them as an attendee. Only add someone if the note separately indicates they are attending, being invited, or cc'd. Do not include the note-taker themselves.",
+        "People to actually invite to this event -- extracted ONLY from phrases that clearly show participation, like 'with Sarah', 'invite the Hendricks', 'cc opposing counsel', 'meet with John', 'Monica and Peter to attend', 'attendees: Monica, Peter', 'X and Y will be there', 'loop in Tom', 'bring Sam', 'Tom joining', 'join us: X, Y', 'X on the call', 'need Jane there', or a shorthand 'w/' used the same way as 'with'. A person's name showing up elsewhere in the note -- as part of a case/matter name, party name, or subject line (e.g. 'Smith v. Jones', 'the Dillon matter', 're: Johnson deposition') -- is NOT by itself a reason to add them as an attendee. Only add someone if the note separately indicates they are attending, being invited, or cc'd. Do not include the note-taker themselves.",
       items: {
         type: "object",
         properties: {
@@ -116,6 +116,11 @@ const EVENT_ITEM_SCHEMA = {
       description:
         "Only meaningful when courtDetected is non-null. True (the default) unless the note clearly states personal/in-hand/hand delivery -- mail, email, and e-filing/EFSP service all get Rule 6(d)'s +3 days, so default true whenever the note doesn't specify a service method at all.",
     },
+    documentServed: {
+      type: "string",
+      description:
+        "Only fill in when courtDetected is non-null AND the note says what was served or filed. Reworded into a short, calendar-ready noun phrase, capitalized like a document title (e.g. 'served with a motion to dismiss' -> 'Motion to Dismiss'; 'they filed for summary judgment' -> 'Motion for Summary Judgment'; 'interrogatories' -> 'Interrogatories'). Empty string if the note doesn't say what document triggered the deadline -- never guess.",
+    },
     caseNumber: {
       type: "string",
       description:
@@ -135,6 +140,7 @@ const EVENT_ITEM_SCHEMA = {
     "suggestedRuleSet",
     "serviceDate",
     "mailOrElectronicService",
+    "documentServed",
     "caseNumber",
   ],
 };
@@ -170,8 +176,8 @@ Rules:
 - Return an empty array if nothing in the note is schedulable -- don't force a placeholder event just to have something to return.
 - Each event's title should be short and human-friendly (e.g. "Deposition prep with Sarah"), not the raw note text.
 - Each event's description must add real information beyond what its own title, date/time, duration, attendees, reminders, and video-call/Meet setup already say -- never restate "call/meeting with X" as description text just because someone was named as an attendee, and never restate the time or reminder timing in prose. If the note has nothing further for that event (no agenda, case reference, location, or other detail), leave description as an empty string. Write real description text as natural, complete sentences, not restated fragments of the note.
-- Default reminder is one popup 30 minutes before, unless the note specifies reminder timing or method for that event (e.g. "email me a day before", "remind me an hour ahead", "no reminder" -> empty reminders array).
-- Attendees: pull out people the note says to meet with, invite, cc, or have attend for that specific event -- including phrasing like "X to attend", "attendees: X, Y", or "X and Y will be there", not just "with X" -- not the note-taker. A name is only an attendee if the note says that person is participating, invited, cc'd, or attending -- a name that appears merely as part of a case/matter name, party name, or subject reference (e.g. "Smith v. Jones", "the Dillon matter", "re: Johnson deposition", a case caption, a docket title) is NOT an attendee unless the note separately says that person is attending or should be invited. When in doubt, leave them out rather than guessing. Only fill in an email if the note literally contains one; otherwise leave email as "" and put their name in "name" exactly as written (e.g. "Sarah", "the Hendricks", "opposing counsel on Mercer") — a name-only attendee gets matched against the user's contacts afterward, so don't guess or fabricate an address.
+- Default reminder is one popup 30 minutes before, unless the note specifies reminder timing or method for that event (e.g. "email me a day before", "remind me an hour ahead", "no reminder" -> empty reminders array). If the note asks for more than one reminder for the same event (e.g. "remind me a week before and again the day of", "reminders: 1 week before and at the time"), return one entry per reminder the note asks for -- don't collapse multiple stated reminders into just one.
+- Attendees: pull out people the note says to meet with, invite, cc, or have attend for that specific event -- including phrasing like "X to attend", "attendees: X, Y", "X and Y will be there", "loop in X", "bring X", "X joining", "join us: X, Y", "X on the call", "need X there", or a shorthand "w/" used the same way as "with" -- not just "with X". A name is only an attendee if the note says that person is participating, invited, cc'd, attending, or joining -- a name that appears merely as part of a case/matter name, party name, or subject reference (e.g. "Smith v. Jones", "the Dillon matter", "re: Johnson deposition", a case caption, a docket title) is NOT an attendee unless the note separately says that person is attending or should be invited. When in doubt between two people-sounding readings, prefer extracting the one that plausibly indicates participation over silently dropping it, but never invent an attendee the note gives no participation cue for at all. Only fill in an email if the note literally contains one; otherwise leave email as "" and put their name in "name" exactly as written, using the fullest form the note gives (e.g. "Sarah", "Sarah Chen", "the Hendricks", "opposing counsel on Mercer") — a name-only attendee gets matched against the user's contacts (and any name the user has previously resolved to an email) afterward, so don't guess or fabricate an address.
 - addGoogleMeet is true only for an explicitly virtual/video meeting. A note that just says "meeting" or "call" with no virtual cue should leave it false.
 - If an event's date/time is genuinely unclear, still include it (don't drop it) -- set date to today (${nowLocal.slice(0, 10)}) if nothing usable was given, and explain in that event's clarificationNeeded that you guessed so the user should check it.
 
@@ -180,10 +186,11 @@ Default scheduling when the note doesn't give an explicit clock time for an even
 2. An explicit clock time is given (e.g. "3pm", "10:30am") -- set allDay false, startTime to that time, and endTime to whatever duration the note states, or 60 minutes after startTime if no duration is given. A duration written as a decimal number of hours (e.g. "1.25hrs", "1.5 hours", ".75 hr") means the fractional part of an hour, not minutes -- convert it precisely (fraction x 60, rounded to the nearest minute): 1.25 hours is 1 hour 15 minutes, 1.5 hours is 1 hour 30 minutes, 0.75 hours is 45 minutes. Never read "1.25hrs" as "1 hour 25 minutes".
 3. Only a loose part-of-day word is given, no clock time -- set allDay false and use its default start/end window: "morning" -> 09:00-11:59, "afternoon" -> 12:00-16:59, "evening" or "night" -> 17:00-20:00. An explicit duration elsewhere in the note (e.g. "morning meeting, 2 hours") overrides only the window's length, keeping its start time.
 
-Court and filing deadlines (courtDetected/suggestedRuleSet/serviceDate/mailOrElectronicService/caseNumber): this firm practices in Massachusetts state courts, so flag an event as a court deadline ONLY when the note describes an actual filing/response deadline governed by MA court rules -- e.g. "served with a motion to dismiss," "opposition due," "response deadline," a docketed filing with a court named. Do NOT flag an ordinary hearing, meeting, or appointment that merely happens to be at a courthouse -- courtDetected must stay null for those. When you do flag one:
+Court and filing deadlines (courtDetected/suggestedRuleSet/serviceDate/mailOrElectronicService/documentServed/caseNumber): this firm practices in Massachusetts state courts, so flag an event as a court deadline ONLY when the note describes an actual filing/response deadline governed by MA court rules -- e.g. "served with a motion to dismiss," "opposition due," "response deadline," a docketed filing with a court named. Do NOT flag an ordinary hearing, meeting, or appointment that merely happens to be at a courthouse -- courtDetected must stay null for those. When you do flag one:
 - courtDetected is the court's name exactly as written in the note.
 - suggestedRuleSet maps it to exactly one of the four known sets (masuperior/malandct/maappellate/marcp) per the schema description above -- pick the closest match; use 'marcp' as the fallback when a MA trial-court civil filing is described but no more specific court is named.
-- serviceDate and caseNumber come ONLY from what the note actually states -- leave them null/empty rather than guessing, even though this event still needs a "date" field filled in per the rules above (that top-level date field can default to the service date if one is known, or fall back to the same today-default as any other event; a human will confirm the real deadline in the app before anything is computed, so getting this particular field slightly wrong here is low-stakes).
+- serviceDate, documentServed, and caseNumber come ONLY from what the note actually states -- leave them null/empty rather than guessing, even though this event still needs a "date" field filled in per the rules above (that top-level date field can default to the service date if one is known, or fall back to the same today-default as any other event; a human will confirm the real deadline in the app before anything is computed, so getting this particular field slightly wrong here is low-stakes).
+- documentServed matters beyond bookkeeping: for a MA Superior Court deadline, whether it names a summary-judgment motion specifically (vs. an ordinary motion) changes which day count the app computes under -- so extract it whenever the note says what was served, even loosely (e.g. "they moved for summary judgment").
 - allDay should be true and startTime/endTime left empty for a court deadline event -- it's a due-by date, not a scheduled meeting.
 - This detection is a starting suggestion only, never an applied rule -- the app always requires the user to confirm or decline it, and computes the actual due date itself rather than trusting any date you provide here.
 - Always call the extract_events tool exactly once with your result. Do not respond in plain text.`;
@@ -266,6 +273,7 @@ function normalizeEvent(raw: Record<string, unknown>, nowLocal: string): ParsedE
           typeof raw.serviceDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.serviceDate) ? raw.serviceDate : null,
         // Defaults true (the common case) unless the model explicitly says false.
         mailOrElectronicService: raw.mailOrElectronicService !== false,
+        documentServed: typeof raw.documentServed === "string" ? raw.documentServed.trim() : "",
         caseNumber: typeof raw.caseNumber === "string" ? raw.caseNumber.trim() : "",
         status: "pending",
       }
