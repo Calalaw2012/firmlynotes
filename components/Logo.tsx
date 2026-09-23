@@ -1,5 +1,5 @@
 export default function Logo({ size = "md" }: { size?: "md" | "lg" }) {
-  const height = size === "lg" ? "h-14 md:h-16" : "h-9";
+  const height = size === "lg" ? "h-14 md:h-16" : "h-[54px]";
   return (
     <>
       <img
@@ -10,7 +10,7 @@ export default function Logo({ size = "md" }: { size?: "md" | "lg" }) {
       <img
         src="/logo-dark.png"
         alt="Firmly Notes"
-        className={`hidden ${height} w-auto dark:block`}
+        className={`hidden ${height} w-auto dark:inline`}
       />
     </>
   );
