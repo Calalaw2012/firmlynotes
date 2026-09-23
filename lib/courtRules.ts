@@ -39,6 +39,18 @@ export const RULE_LINKS: Record<RuleSetKey, { label: string; url: string }> = {
   },
 };
 
+/**
+ * Superior Court's *other* motion track: Rule 9A(b)(1) gives a summary-
+ * judgment motion a longer, 21-day opposition period instead of 9A(b)(4)'s
+ * general 10-day one (see RULE_LINKS.masuperior / KNOWN_OPPOSITION_DAYS
+ * above). Same rule (9A), same citation page -- just a different
+ * subsection and day count, switched in by isSummaryJudgmentMotion.
+ */
+export const SUPERIOR_SUMMARY_JUDGMENT_LINK = {
+  label: "Superior Court Rule 9A(b)(1) — Summary Judgment",
+  url: "https://www.mass.gov/superior-court-rules/superior-court-rule-9a-civil-motions",
+};
+
 export const RULE_6_LINK = {
   label: "Mass. R. Civ. P. 6 — Time",
   url: "https://www.mass.gov/rules-of-civil-procedure/civil-procedure-rule-6-time",
@@ -50,22 +62,43 @@ export const RULE_6_LINK = {
  * development. "marcp" is deliberately absent: Rule 12(b)(6) itself sets
  * no opposition deadline -- that's always set by whichever court's local
  * rules actually apply (9A, Land Court Rule 4, etc.), so there is no
- * single day count to show for it. See renderCascade's "marcp" branch in
- * the EventCard for how that structural non-case is surfaced to the user.
+ * single day count to show for it. See the "marcp" branch of
+ * ConfirmedCascade in components/EventCard.tsx for how that structural
+ * non-case is surfaced to the user.
  *
- * masuperior is the *general*-motion track (Rule 9A(b)(4)). Summary
- * judgment specifically runs a longer, 21-day track under Rule 9A(b)(1) --
- * deliberately not modeled here, since nothing in the extraction schema
- * distinguishes "motion to dismiss" from "motion for summary judgment"
- * reliably enough to auto-pick between them. A user whose motion actually
- * is for summary judgment should adjust the computed date by hand; this is
- * flagged in the cascade's helper text.
+ * masuperior here is specifically Rule 9A(b)(4)'s *general*-motion track.
+ * A summary-judgment motion runs the longer, 21-day track under Rule
+ * 9A(b)(1) instead -- see SUPERIOR_SUMMARY_JUDGMENT_DAYS and
+ * isSummaryJudgmentMotion, which computeDeadline consults to pick between
+ * the two whenever ruleSet is "masuperior".
  */
 export const KNOWN_OPPOSITION_DAYS: Partial<Record<RuleSetKey, number>> = {
   masuperior: 10,
   malandct: 30,
   maappellate: 7,
 };
+
+/**
+ * Rule 9A(b)(1)'s opposition period for a summary-judgment motion
+ * specifically, in days after service -- longer than 9A(b)(4)'s general
+ * 10-day motion track. Only meaningful when ruleSet is "masuperior"; see
+ * computeDeadline.
+ */
+export const SUPERIOR_SUMMARY_JUDGMENT_DAYS = 21;
+
+/**
+ * True when the document served looks like a summary-judgment motion, by
+ * a simple, deliberately narrow text match ("summary judgment" appearing
+ * anywhere in the document-served field, case-insensitive, regardless of
+ * spacing). Used to switch a Superior Court deadline from Rule 9A(b)(4)'s
+ * general 10-day opposition period to Rule 9A(b)(1)'s 21-day one --
+ * nothing else in the extraction schema reliably distinguishes the two,
+ * so this reads the same field the confirmed-state card now shows a live
+ * description preview for (see buildCourtDeadlineDescription below).
+ */
+export function isSummaryJudgmentMotion(documentServed: string): boolean {
+  return /summary\s*judgment/i.test(documentServed);
+}
 
 // -- Massachusetts legal holidays, any year -----------------------------
 //
@@ -145,6 +178,29 @@ export function formatISODate(date: Date): string {
   return iso(date);
 }
 
+/** "September 22, 2026" -- the fuller, non-abbreviated form used in the calendar description text (formatLongDate in EventCard.tsx stays the short "Mon, Sep 22" form used everywhere else in the UI). */
+export function formatFullDate(date: Date): string {
+  return date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
+}
+
+/**
+ * Builds the calendar-event description for a court deadline, from
+ * exactly the two fields the confirmed-state card shows a live preview
+ * of: what was served, and when. This is the single source of truth for
+ * that description -- both the card's live preview and the value actually
+ * saved to event.description call this, so they can never drift apart.
+ * Empty string (matching a normal event's "no description") when neither
+ * field has anything yet.
+ */
+export function buildCourtDeadlineDescription(documentServed: string, serviceDateISO: string | null): string {
+  const doc = documentServed.trim();
+  const servicePart = serviceDateISO ? formatFullDate(parseISODate(serviceDateISO)) : null;
+  if (doc && servicePart) return `${doc} served ${servicePart}.`;
+  if (doc) return `${doc} served.`;
+  if (servicePart) return `Served ${servicePart}.`;
+  return "";
+}
+
 export interface Rule6Result {
   /** Where the raw count lands, before any roll-forward for a non-court day. */
   landing: Date;
@@ -198,14 +254,21 @@ export function computeRule6Result(serviceDate: Date, prescribedDays: number): R
  * Returns null when the rule set has no known day count (marcp) or the
  * service date is missing -- callers should show the manual-entry / no-
  * deadline-of-its-own explanation in that case instead.
+ *
+ * isSummaryJudgment (default false) only matters when ruleSet is
+ * "masuperior": true switches the base day count from Rule 9A(b)(4)'s
+ * general 10 days to Rule 9A(b)(1)'s 21 days for a summary-judgment
+ * motion. Callers pass isSummaryJudgmentMotion(cr.documentServed).
  */
 export function computeDeadline(
   ruleSet: RuleSetKey,
   serviceDate: Date,
-  mailOrElectronicService: boolean
-): (Rule6Result & { effectiveDays: number }) | null {
-  const baseDays = KNOWN_OPPOSITION_DAYS[ruleSet];
+  mailOrElectronicService: boolean,
+  isSummaryJudgment: boolean = false
+): (Rule6Result & { effectiveDays: number; baseDays: number }) | null {
+  const baseDays =
+    ruleSet === "masuperior" && isSummaryJudgment ? SUPERIOR_SUMMARY_JUDGMENT_DAYS : KNOWN_OPPOSITION_DAYS[ruleSet];
   if (baseDays == null) return null;
   const effectiveDays = mailOrElectronicService ? baseDays + 3 : baseDays;
-  return { ...computeRule6Result(serviceDate, effectiveDays), effectiveDays };
+  return { ...computeRule6Result(serviceDate, effectiveDays), effectiveDays, baseDays };
 }
