@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Public_Sans, Poppins } from "next/font/google";
+import { Public_Sans } from "next/font/google";
 import Providers from "@/components/Providers";
 import "./globals.css";
 
@@ -17,7 +17,6 @@ const publicSans = Public_Sans({
 const poppins = Poppins({
   subsets: ["latin"],
   weight: ["300", "700"],
-  variable: "--font-poppins",
   display: "swap",
 });
 
