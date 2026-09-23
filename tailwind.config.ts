@@ -62,10 +62,6 @@ const config: Config = {
           "system-ui",
           "sans-serif",
         ],
-        // The "firmly notes" wordmark only (see components/Logo.tsx) -- the
-        // rounded geometric face Firmly Research's own logo uses, which
-        // Public Sans (this app's body copy) doesn't have.
-        ],
       },
       borderRadius: {
         pill: "999px",
