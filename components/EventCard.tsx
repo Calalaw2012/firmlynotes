@@ -508,7 +508,7 @@ function PendingRuleSetPicker({
         </span>
         {link ? (
           
-            href={link.url}
+     <a       href={link.url}
             target="_blank"
             rel="noreferrer"
             className="block text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125"
@@ -519,7 +519,7 @@ function PendingRuleSetPicker({
           <span className="block text-xs text-ink-faint">Select a rule set above to see the specific rule that applies.</span>
         )}
         
-          href={RULE_6_LINK.url}
+    <a      href={RULE_6_LINK.url}
           target="_blank"
           rel="noreferrer"
           className="block text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125"
@@ -600,7 +600,7 @@ function ConfirmedCascade({
               <div className="text-sm font-medium text-ink">Opposition to motion due</div>
               <div className="mt-0.5 text-xs text-ink-faint">
                 
-                  href={link.url}
+           <a       href={link.url}
                   target="_blank"
                   rel="noreferrer"
                   className="underline underline-offset-[3px] hover:text-ink"
