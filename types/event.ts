@@ -18,12 +18,23 @@ export interface Attendee {
 }
 
 /**
- * The four Massachusetts rule sets the court-rules cascade knows how to
- * compute a deadline under. "marcp" (the bare Rules of Civil Procedure) has
- * no opposition period of its own -- see lib/courtRules.ts -- but still
- * needs a key so the dropdown and citation link can point at it.
+ * The deadline types the court-rules cascade knows how to compute a due
+ * date under. The first four are jurisdiction/court rule sets governing a
+ * motion's opposition deadline -- "marcp" (the bare Rules of Civil
+ * Procedure) has no opposition period of its own -- see lib/courtRules.ts
+ * -- but still needs a key so the dropdown and citation link can point at
+ * it. The last three are MA discovery-response deadlines, which run under
+ * a fixed statewide rule (33/34/36) rather than any particular court's
+ * local rules, and apply regardless of which court the case is in.
  */
-export type RuleSetKey = "marcp" | "malandct" | "masuperior" | "maappellate";
+export type RuleSetKey =
+  | "marcp"
+  | "malandct"
+  | "masuperior"
+  | "maappellate"
+  | "interrogatories"
+  | "production"
+  | "admissions";
 
 /**
  * Present on a ParsedEvent only when the note appears to describe a
