@@ -643,7 +643,7 @@ function PendingRuleSetPicker({
           Official rule text for this event
         </span>
         {link ? (
-          
+          <a
             href={link.url}
             target="_blank"
             rel="noreferrer"
@@ -654,7 +654,7 @@ function PendingRuleSetPicker({
         ) : (
           <span className="block text-xs text-ink-faint">Select a rule set above to see the specific rule that applies.</span>
         )}
-        
+        <a 
           href={RULE_6_LINK.url}
           target="_blank"
           rel="noreferrer"
@@ -735,7 +735,7 @@ function ConfirmedCascade({
             <div>
               <div className="text-sm font-medium text-ink">{responseLabelFor(ruleSet)}</div>
               <div className="mt-0.5 text-xs text-ink-faint">
-                
+                <a
                   href={link.url}
                   target="_blank"
                   rel="noreferrer"
