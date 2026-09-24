@@ -1,17 +1,9 @@
 export default function Logo({ size = "md" }: { size?: "md" | "lg" }) {
-  const height = size === "lg" ? "h-14 md:h-16" : "h-[54px]";
+  const text = size === "lg" ? "text-4xl md:text-5xl" : "text-2xl";
   return (
-    <>
-      <img
-        src="/logo-light.png"
-        alt="Firmly Notes"
-        className={`${height} w-auto dark:hidden`}
-      />
-      <img
-        src="/logo-dark.png"
-        alt="Firmly Notes"
-        className={`hidden ${height} w-auto dark:inline`}
-      />
-    </>
+    <div className={`${text} text-center font-light leading-[1.05] tracking-tight select-none`}>
+      <div className="text-ink">firmly</div>
+      <div className="text-sage">notes</div>
+    </div>
   );
 }
