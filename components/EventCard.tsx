@@ -7,7 +7,7 @@ import {
   RULE_LINKS,
   RULE_6_LINK,
   SUPERIOR_SUMMARY_JUDGMENT_LINK,
-  KNOWN_OPPOSITION_DAYS,
+  KNOWN_RESPONSE_DAYS,
   computeDeadline,
   isSummaryJudgmentMotion,
   buildCourtDeadlineDescription,
@@ -209,7 +209,29 @@ function VideoDetails({
   );
 }
 
-const RULE_SET_ORDER: RuleSetKey[] = ["marcp", "malandct", "masuperior", "maappellate"];
+const RULE_SET_ORDER: RuleSetKey[] = [
+  "marcp",
+  "malandct",
+  "masuperior",
+  "maappellate",
+  "interrogatories",
+  "production",
+  "admissions",
+];
+
+/** The confirmed-cascade's headline label for what's actually due -- most rule sets are an opposition to a motion, but the three discovery rule sets are a response to a request instead, so the label should say what the deadline actually is. */
+function responseLabelFor(ruleSet: RuleSetKey): string {
+  switch (ruleSet) {
+    case "interrogatories":
+      return "Interrogatory answers due";
+    case "production":
+      return "Document production due";
+    case "admissions":
+      return "Response to admissions due";
+    default:
+      return "Opposition to motion due";
+  }
+}
 const DOW_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -554,7 +576,7 @@ function ConfirmedCascade({
 }) {
   const isSJ = courtRulesIsSummaryJudgment(cr);
   const link = isSJ ? SUPERIOR_SUMMARY_JUDGMENT_LINK : RULE_LINKS[ruleSet];
-  const knownDays = KNOWN_OPPOSITION_DAYS[ruleSet];
+  const knownDays = KNOWN_RESPONSE_DAYS[ruleSet];
   const deadline =
     knownDays != null && serviceDate ? computeDeadline(ruleSet, serviceDate, cr.mailOrElectronicService, isSJ) : null;
 
@@ -597,7 +619,7 @@ function ConfirmedCascade({
         <>
           <div className="flex items-start justify-between gap-3 rounded-md border border-border-faint bg-bg-elevated p-3">
             <div>
-              <div className="text-sm font-medium text-ink">Opposition to motion due</div>
+              <div className="text-sm font-medium text-ink">{responseLabelFor(ruleSet)}</div>
               <div className="mt-0.5 text-xs text-ink-faint">
                 
            <a       href={link.url}
@@ -690,7 +712,7 @@ function CourtRulesSection({
       return;
     }
     const deadline =
-      nextServiceDate && KNOWN_OPPOSITION_DAYS[nextCr.ruleSet] != null
+      nextServiceDate && KNOWN_RESPONSE_DAYS[nextCr.ruleSet] != null
         ? computeDeadline(nextCr.ruleSet, nextServiceDate, nextCr.mailOrElectronicService, courtRulesIsSummaryJudgment(nextCr))
         : null;
     onChange({
