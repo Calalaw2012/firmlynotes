@@ -18,6 +18,9 @@ export const RULE_SET_LABELS: Record<RuleSetKey, string> = {
   malandct: "MA Land Court Rules",
   masuperior: "MA Superior Court Rules",
   maappellate: "MA Rules of Appellate Procedure",
+  interrogatories: "Interrogatories (Mass. R. Civ. P. 33)",
+  production: "Request for Production (Mass. R. Civ. P. 34)",
+  admissions: "Request for Admissions (Mass. R. Civ. P. 36)",
 };
 
 export const RULE_LINKS: Record<RuleSetKey, { label: string; url: string }> = {
@@ -36,6 +39,18 @@ export const RULE_LINKS: Record<RuleSetKey, { label: string; url: string }> = {
   maappellate: {
     label: "Appellate Procedure Rule 15(a) — Motions",
     url: "https://www.mass.gov/rules-of-appellate-procedure/appellate-procedure-rule-15-motions",
+  },
+  interrogatories: {
+    label: "Mass. R. Civ. P. 33 — Interrogatories to Parties",
+    url: "https://www.mass.gov/rules-of-civil-procedure/civil-procedure-rule-33-interrogatories-to-parties",
+  },
+  production: {
+    label: "Mass. R. Civ. P. 34 — Producing Documents, ESI, and Tangible Things",
+    url: "https://www.mass.gov/rules-of-civil-procedure/civil-procedure-rule-34-producing-documents-electronically-stored-information-and-tangible-things-or-entering-onto-land-for-inspection-and-other-purposes",
+  },
+  admissions: {
+    label: "Mass. R. Civ. P. 36 — Requests for Admission",
+    url: "https://www.mass.gov/rules-of-civil-procedure/civil-procedure-rule-36-requests-for-admission",
   },
 };
 
@@ -57,25 +72,42 @@ export const RULE_6_LINK = {
 };
 
 /**
- * The general-motion opposition period for each rule set, in days after
- * service, researched and verified against mass.gov during the mockup's
- * development. "marcp" is deliberately absent: Rule 12(b)(6) itself sets
- * no opposition deadline -- that's always set by whichever court's local
- * rules actually apply (9A, Land Court Rule 4, etc.), so there is no
- * single day count to show for it. See the "marcp" branch of
- * ConfirmedCascade in components/EventCard.tsx for how that structural
- * non-case is surfaced to the user.
+ * The response period for each rule set, in days after service, researched
+ * and verified against mass.gov. For the four jurisdiction rule sets this
+ * is the general-motion *opposition* period; "marcp" is deliberately
+ * absent there: Rule 12(b)(6) itself sets no opposition deadline -- that's
+ * always set by whichever court's local rules actually apply (9A, Land
+ * Court Rule 4, etc.), so there is no single day count to show for it. See
+ * the "marcp" branch of ConfirmedCascade in components/EventCard.tsx for
+ * how that structural non-case is surfaced to the user.
  *
  * masuperior here is specifically Rule 9A(b)(4)'s *general*-motion track.
  * A summary-judgment motion runs the longer, 21-day track under Rule
  * 9A(b)(1) instead -- see SUPERIOR_SUMMARY_JUDGMENT_DAYS and
  * isSummaryJudgmentMotion, which computeDeadline consults to pick between
  * the two whenever ruleSet is "masuperior".
+ *
+ * The last three entries are MA discovery-response deadlines, which run
+ * under a fixed statewide rule rather than any court's local rules, so
+ * they apply the same day count no matter which court the case is in:
+ * - interrogatories: Mass. R. Civ. P. 33(a)(3) -- 45 days after service,
+ *   flat (no shorter period for a defendant's first response, unlike 34/36).
+ * - production: Mass. R. Civ. P. 34(b) -- 30 days after service of the
+ *   request (45 days for a defendant responding within 45 days of being
+ *   served the summons and complaint itself -- that defendant's-first-
+ *   response exception isn't modeled here; the app always requires the
+ *   user to confirm before anything is relied on, same as every other
+ *   rule set below).
+ * - admissions: Mass. R. Civ. P. 36(a) -- 30 days after service, same
+ *   defendant's-first-response exception as Rule 34, not modeled here.
  */
-export const KNOWN_OPPOSITION_DAYS: Partial<Record<RuleSetKey, number>> = {
+export const KNOWN_RESPONSE_DAYS: Partial<Record<RuleSetKey, number>> = {
   masuperior: 10,
   malandct: 30,
   maappellate: 7,
+  interrogatories: 45,
+  production: 30,
+  admissions: 30,
 };
 
 /**
@@ -267,7 +299,7 @@ export function computeDeadline(
   isSummaryJudgment: boolean = false
 ): (Rule6Result & { effectiveDays: number; baseDays: number }) | null {
   const baseDays =
-    ruleSet === "masuperior" && isSummaryJudgment ? SUPERIOR_SUMMARY_JUDGMENT_DAYS : KNOWN_OPPOSITION_DAYS[ruleSet];
+    ruleSet === "masuperior" && isSummaryJudgment ? SUPERIOR_SUMMARY_JUDGMENT_DAYS : KNOWN_RESPONSE_DAYS[ruleSet];
   if (baseDays == null) return null;
   const effectiveDays = mailOrElectronicService ? baseDays + 3 : baseDays;
   return { ...computeRule6Result(serviceDate, effectiveDays), effectiveDays, baseDays };
