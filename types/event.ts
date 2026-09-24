@@ -18,12 +18,23 @@ export interface Attendee {
 }
 
 /**
- * The four Massachusetts rule sets the court-rules cascade knows how to
- * compute a deadline under. "marcp" (the bare Rules of Civil Procedure) has
- * no opposition period of its own -- see lib/courtRules.ts -- but still
- * needs a key so the dropdown and citation link can point at it.
+ * The deadline types the court-rules cascade knows how to compute a due
+ * date under. The first four are jurisdiction/court rule sets governing a
+ * motion's opposition deadline -- "marcp" (the bare Rules of Civil
+ * Procedure) has no opposition period of its own -- see lib/courtRules.ts
+ * -- but still needs a key so the dropdown and citation link can point at
+ * it. The last three are MA discovery-response deadlines, which run under
+ * a fixed statewide rule (33/34/36) rather than any particular court's
+ * local rules, and apply regardless of which court the case is in.
  */
-export type RuleSetKey = "marcp" | "malandct" | "masuperior" | "maappellate";
+export type RuleSetKey =
+  | "marcp"
+  | "malandct"
+  | "masuperior"
+  | "maappellate"
+  | "interrogatories"
+  | "production"
+  | "admissions";
 
 /**
  * Present on a ParsedEvent only when the note appears to describe a
@@ -43,6 +54,17 @@ export interface CourtRulesInfo {
   serviceDate: string | null;
   /** Rule 6(d): whether service was by mail, email, or the EFSP (+3 days). Defaults true (the common case); the extractor sets it false only when the note clearly says personal/in-hand service. */
   mailOrElectronicService: boolean;
+  /**
+   * What was served/filed -- e.g. "Motion to Dismiss", "Motion for Summary
+   * Judgment", "Interrogatories" -- filled in from the note when it says so
+   * (same no-fabrication rule as serviceDate), and editable by hand
+   * otherwise. Paired with serviceDate to build the confirmed event's
+   * calendar description (buildCourtDeadlineDescription in
+   * lib/courtRules.ts), and checked for "summary judgment" to switch the
+   * Superior Court track from Rule 9A(b)(4)'s 10-day opposition period to
+   * Rule 9A(b)(1)'s 21-day one (see isSummaryJudgmentMotion).
+   */
+  documentServed: string;
   /**
    * A reference field only -- never sent to Google Calendar, never
    * auto-injected into description. Purely for the user's own use while
