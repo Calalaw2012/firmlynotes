@@ -55,7 +55,66 @@ function formatDuration(totalMinutes: number): string {
   if (minutes || !hours) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
   return parts.join(" and ");
 }
+function timeStringToParts(hhmm: string): { h12: number; m: number; ampm: "AM" | "PM" } {
+  const [hStr, mStr] = hhmm.split(":");
+  const h24 = parseInt(hStr, 10);
+  const m = parseInt(mStr, 10);
+  const ampm: "AM" | "PM" = h24 >= 12 ? "PM" : "AM";
+  let h12 = h24 % 12;
+  if (h12 === 0) h12 = 12;
+  return { h12, m, ampm };
+}
 
+function partsToTimeString(h12: number, m: number, ampm: "AM" | "PM"): string {
+  let h24 = h12 % 12;
+  if (ampm === "PM") h24 += 12;
+  return `${String(h24).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+const HOUR_OPTIONS = Array.from({ length: 12 }, (_, i) => i + 1);
+const MINUTE_OPTIONS = Array.from({ length: 60 }, (_, i) => i);
+
+/**
+ * Three plain <select> elements instead of a native <input type="time">.
+ * A native time input's wheel picker -- and its "Reset" control -- renders
+ * in the device's own OS-level system language no matter what this page
+ * says, e.g. "Ripristina" on an Italian-locale iPhone. A <select>'s native
+ * picker only ever shows the option text this component gives it, so it
+ * stays in plain English regardless of the device's language setting.
+ */
+function TimeSelect({
+  value,
+  onChange,
+  autoFocus,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  autoFocus?: boolean;
+}) {
+  const { h12, m, ampm } = timeStringToParts(value);
+  return (
+    <div className="mt-1 flex items-center gap-1.5">
+      <select autoFocus={autoFocus} className={inputClasses} value={h12} onChange={(e) => onChange(partsToTimeString(Number(e.target.value), m, ampm))}>
+        {HOUR_OPTIONS.map((h) => (
+          <option key={h} value={h}>
+            {h}
+          </option>
+        ))}
+      </select>
+      <select className={inputClasses} value={m} onChange={(e) => onChange(partsToTimeString(h12, Number(e.target.value), ampm))}>
+        {MINUTE_OPTIONS.map((min) => (
+          <option key={min} value={min}>
+            {String(min).padStart(2, "0")}
+          </option>
+        ))}
+      </select>
+      <select className={inputClasses} value={ampm} onChange={(e) => onChange(partsToTimeString(h12, m, e.target.value as "AM" | "PM"))}>
+        <option value="AM">AM</option>
+        <option value="PM">PM</option>
+      </select>
+    </div>
+  );
+}
 function TimeField({
   event,
   disabled,
@@ -127,32 +186,17 @@ function TimeField({
         />
         All day
       </label>
-      {!draftAllDay && (
-        // Stacked, not side-by-side: two native <input type="time"> boxes
-        // in a row need more combined width than a narrow half-column card
-        // has to give (the browser's own time-picker chrome has a fairly
-        // wide minimum), which pushed this panel's right edge past the
-        // card's border. Full-width, one on top of the other, removes that
-        // overflow entirely regardless of how narrow the card gets.
+         {!draftAllDay && (
+        // Two custom <select>-based time pickers, not native <input
+        // type="time"> boxes -- see the TimeSelect comment above for why.
         <div className="space-y-2">
           <label className="block text-[10px] uppercase tracking-wide text-ink-faint">
             Start
-            <input
-              type="time"
-              className={`${inputClasses} mt-1`}
-              value={draftStart}
-              onChange={(e) => setDraftStart(e.target.value)}
-              autoFocus
-            />
+            <TimeSelect value={draftStart} onChange={setDraftStart} autoFocus />
           </label>
           <label className="block text-[10px] uppercase tracking-wide text-ink-faint">
             End
-            <input
-              type="time"
-              className={`${inputClasses} mt-1`}
-              value={draftEnd}
-              onChange={(e) => setDraftEnd(e.target.value)}
-            />
+            <TimeSelect value={draftEnd} onChange={setDraftEnd} />
           </label>
         </div>
       )}
@@ -206,7 +250,7 @@ function DateField({
 
   function openEditor() {
     if (disabled) return;
-    setDraft(value);
+    setDraft(value || formatISODate(new Date()));
     setEditing(true);
   }
 
@@ -229,18 +273,45 @@ function DateField({
     );
   }
 
+  const [dy, dm, dd] = draft.split("-").map(Number);
+  const daysInMonth = new Date(Date.UTC(dy, dm, 0)).getUTCDate();
+  const thisYear = new Date().getUTCFullYear();
+  const yearOptions = Array.from({ length: 8 }, (_, i) => thisYear - 1 + i);
+
+  function setDate(nextY: number, nextM: number, nextD: number) {
+    const maxDay = new Date(Date.UTC(nextY, nextM, 0)).getUTCDate();
+    const clampedD = Math.min(nextD, maxDay);
+    const next = `${nextY}-${String(nextM).padStart(2, "0")}-${String(clampedD).padStart(2, "0")}`;
+    setDraft(min && next < min ? min : next);
+  }
+
   return (
-    <input
-      type="date"
-      lang="en-US"
-      autoFocus
-      className={inputClasses}
-      min={min}
-      value={draft}
-      disabled={disabled}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-    />
+    <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-indigo-border bg-bg-sunken p-2" onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) commit(); }}>
+      <select autoFocus className={`${inputClasses} w-[108px]`} value={dm} onChange={(e) => setDate(dy, Number(e.target.value), dd)}>
+        {MONTH_NAMES.map((name, i) => (
+          <option key={name} value={i + 1}>
+            {name}
+          </option>
+        ))}
+      </select>
+      <select className={`${inputClasses} w-[68px]`} value={dd} onChange={(e) => setDate(dy, dm, Number(e.target.value))}>
+        {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => (
+          <option key={day} value={day}>
+            {day}
+          </option>
+        ))}
+      </select>
+      <select className={`${inputClasses} w-[84px]`} value={dy} onChange={(e) => setDate(Number(e.target.value), dm, dd)}>
+        {yearOptions.map((yr) => (
+          <option key={yr} value={yr}>
+            {yr}
+          </option>
+        ))}
+      </select>
+      <button type="button" onClick={commit} className="text-xs font-medium text-indigo-text hover:underline">
+        Done
+      </button>
+    </div>
   );
 }
 
