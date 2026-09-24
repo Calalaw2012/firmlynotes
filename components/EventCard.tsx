@@ -94,21 +94,21 @@ function TimeSelect({
   const { h12, m, ampm } = timeStringToParts(value);
   return (
     <div className="mt-1 flex items-center gap-1.5">
-      <select autoFocus={autoFocus} className={inputClasses} value={h12} onChange={(e) => onChange(partsToTimeString(Number(e.target.value), m, ampm))}>
+            <select autoFocus={autoFocus} className={`${inputClasses} w-[58px] shrink-0`} value={h12} onChange={(e) => onChange(partsToTimeString(Number(e.target.value), m, ampm))}>
         {HOUR_OPTIONS.map((h) => (
           <option key={h} value={h}>
             {h}
           </option>
         ))}
       </select>
-      <select className={inputClasses} value={m} onChange={(e) => onChange(partsToTimeString(h12, Number(e.target.value), ampm))}>
+      <select className={`${inputClasses} w-[58px] shrink-0`} value={m} onChange={(e) => onChange(partsToTimeString(h12, Number(e.target.value), ampm))}>
         {MINUTE_OPTIONS.map((min) => (
           <option key={min} value={min}>
             {String(min).padStart(2, "0")}
           </option>
         ))}
       </select>
-      <select className={inputClasses} value={ampm} onChange={(e) => onChange(partsToTimeString(h12, m, e.target.value as "AM" | "PM"))}>
+      <select className={`${inputClasses} w-[64px] shrink-0`} value={ampm} onChange={(e) => onChange(partsToTimeString(h12, m, e.target.value as "AM" | "PM"))}>
         <option value="AM">AM</option>
         <option value="PM">PM</option>
       </select>
