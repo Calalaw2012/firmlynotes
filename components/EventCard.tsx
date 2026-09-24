@@ -24,6 +24,12 @@ const inputClasses =
 
 export type EventCardStatus = "draft" | "creating" | "sent" | "error";
 
+// -- Time field: a single click-to-edit range picker (replaces the old
+// All-day checkbox + always-visible Start/End boxes), per the approved
+// mockup. Duration is no longer its own editable field -- it's a read-only
+// caption computed from Start/End, changed only by editing End (or Start,
+// which just moves the whole range and leaves the length alone).
+
 function formatTimeDisplay(hhmm: string): string {
   const [hStr, mStr] = hhmm.split(":");
   let h = parseInt(hStr, 10);
@@ -37,7 +43,7 @@ function minutesBetween(start: string, end: string): number {
   const [sh, sm] = start.split(":").map(Number);
   const [eh, em] = end.split(":").map(Number);
   let diff = eh * 60 + em - (sh * 60 + sm);
-  if (diff <= 0) diff += 24 * 60;
+  if (diff <= 0) diff += 24 * 60; // end reads as the next day (e.g. 11pm - 1am)
   return diff;
 }
 
@@ -107,6 +113,8 @@ function TimeField({
     <div
       className="space-y-2 rounded-lg border border-indigo-border bg-bg-sunken p-2.5"
       onBlur={(e) => {
+        // Commit only once focus actually leaves this whole editor block,
+        // not on every individual input blurring to the next one inside it.
         if (!e.currentTarget.contains(e.relatedTarget as Node)) commit();
       }}
     >
@@ -120,6 +128,12 @@ function TimeField({
         All day
       </label>
       {!draftAllDay && (
+        // Stacked, not side-by-side: two native <input type="time"> boxes
+        // in a row need more combined width than a narrow half-column card
+        // has to give (the browser's own time-picker chrome has a fairly
+        // wide minimum), which pushed this panel's right edge past the
+        // card's border. Full-width, one on top of the other, removes that
+        // overflow entirely regardless of how narrow the card gets.
         <div className="space-y-2">
           <label className="block text-[10px] uppercase tracking-wide text-ink-faint">
             Start
@@ -153,6 +167,90 @@ function TimeField({
   );
 }
 
+/**
+ * "Sep 24, 2026" -- explicitly en-US and UTC, so this reads the same on
+ * every device regardless of the phone/browser's own system language. A
+ * bare <input type="date"> shows its native OS date-picker text (both the
+ * resting value and the wheel popup) in whatever language the device is
+ * set to -- e.g. "24 set 2026" on an Italian-locale iPhone -- which reads
+ * as broken next to the rest of this English UI. There's no way to force
+ * the native picker's own popup language (that's the OS/browser's call),
+ * but the resting display text is ours to control, exactly like TimeField
+ * already formats its own display instead of showing the raw input.
+ */
+function formatDateDisplay(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return "";
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function DateField({
+  value,
+  disabled,
+  min,
+  onChange,
+}: {
+  value: string;
+  disabled: boolean;
+  min?: string;
+  onChange: (value: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  function openEditor() {
+    if (disabled) return;
+    setDraft(value);
+    setEditing(true);
+  }
+
+  function commit() {
+    setEditing(false);
+    if (draft) onChange(draft);
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={openEditor}
+        disabled={disabled}
+        lang="en-US"
+        className={`${inputClasses} truncate text-left`}
+      >
+        {value ? formatDateDisplay(value) : <span className="text-ink-faint">Choose date…</span>}
+      </button>
+    );
+  }
+
+  return (
+    <input
+      type="date"
+      lang="en-US"
+      autoFocus
+      className={inputClasses}
+      min={min}
+      value={draft}
+      disabled={disabled}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+    />
+  );
+}
+
+// -- Video details: shown once the event is actually sent and Google
+// returned a Meet link. Phone dial-in + PIN only render when the Workspace
+// happens to provision one -- most don't, and there's no way to know before
+// the event is created, so (unlike the mockup, which fakes a link the
+// instant the checkbox is checked) this only ever shows real data, after a
+// real send.
+
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
 
@@ -160,6 +258,8 @@ function CopyButton({ text }: { text: string }) {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
+      // Clipboard access can be blocked (permissions, non-secure context);
+      // the button just won't flash "Copied" in that case.
       return;
     }
     setCopied(true);
@@ -209,6 +309,19 @@ function VideoDetails({
   );
 }
 
+// -- Court rules: MA court/filing deadline detection, confirm/decline, and
+// Rule 6 computation, per the approved mockup -- extended per follow-up
+// feedback with a live "Event description" preview (built from what was
+// served + the service date, exactly what gets saved to Google), a
+// multi-reminder editor and an attendees editor once confirmed (previously
+// neither was exposed for a court-deadline event at all), and a Superior
+// Court summary-judgment switch (Rule 9A(b)(1)'s 21-day opposition period
+// instead of Rule 9A(b)(4)'s general 10-day one, read off what was
+// served). Renders only when event.courtRules is non-null -- an ordinary
+// event is completely unaffected by any of this. See
+// claude/court-rules-feature-approved-mockup-2026-09-22.md in the project
+// for the original approved design and the researched rule citations.
+
 const RULE_SET_ORDER: RuleSetKey[] = [
   "marcp",
   "malandct",
@@ -246,6 +359,7 @@ function sameISODay(a: Date | null, b: Date | null): boolean {
   return Boolean(a && b && formatISODate(a) === formatISODate(b));
 }
 
+/** True when a confirmed Superior Court deadline should use Rule 9A(b)(1)'s 21-day summary-judgment track instead of 9A(b)(4)'s general 10-day one -- see isSummaryJudgmentMotion in lib/courtRules.ts. */
 function courtRulesIsSummaryJudgment(cr: CourtRulesInfo): boolean {
   return cr.ruleSet === "masuperior" && isSummaryJudgmentMotion(cr.documentServed);
 }
@@ -530,7 +644,7 @@ function PendingRuleSetPicker({
         </span>
         {link ? (
           
-     <a       href={link.url}
+            href={link.url}
             target="_blank"
             rel="noreferrer"
             className="block text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125"
@@ -541,7 +655,7 @@ function PendingRuleSetPicker({
           <span className="block text-xs text-ink-faint">Select a rule set above to see the specific rule that applies.</span>
         )}
         
-    <a      href={RULE_6_LINK.url}
+          href={RULE_6_LINK.url}
           target="_blank"
           rel="noreferrer"
           className="block text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125"
@@ -622,7 +736,7 @@ function ConfirmedCascade({
               <div className="text-sm font-medium text-ink">{responseLabelFor(ruleSet)}</div>
               <div className="mt-0.5 text-xs text-ink-faint">
                 
-           <a       href={link.url}
+                  href={link.url}
                   target="_blank"
                   rel="noreferrer"
                   className="underline underline-offset-[3px] hover:text-ink"
@@ -660,13 +774,11 @@ function ConfirmedCascade({
             <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
               Due date
             </label>
-            <input
-              type="date"
-              className={inputClasses}
-              min={cr.serviceDate ?? undefined}
+            <DateField
               value={event.date}
               disabled={disabled}
-              onChange={(e) => onManualDueDateChange(e.target.value)}
+              min={cr.serviceDate ?? undefined}
+              onChange={onManualDueDateChange}
             />
           </div>
         </div>
@@ -787,13 +899,7 @@ function CourtRulesSection({
           <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
             Date served
           </label>
-          <input
-            type="date"
-            className={inputClasses}
-            value={cr.serviceDate ?? ""}
-            disabled={disabled}
-            onChange={(e) => handleServiceDateChange(e.target.value)}
-          />
+          <DateField value={cr.serviceDate ?? ""} disabled={disabled} onChange={handleServiceDateChange} />
         </div>
         <div>
           <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
@@ -867,6 +973,17 @@ function CourtRulesSection({
   );
 }
 
+/**
+ * One independently-editable, independently-sendable event card. This is
+ * the multi-event evolution of the old single-note ConfirmEventCard: same
+ * fields and validation, but each instance owns its own send/success/error
+ * state instead of the whole page moving through one shared phase. "Back to
+ * note" doesn't apply here (the note stays visible at all times), so it's
+ * replaced with "Delete event", which drops just this (not-yet-sent) card.
+ * A card that's already been sent stays on screen even if its note text is
+ * later removed entirely -- deleting the real calendar event isn't
+ * something this button does.
+ */
 export default function EventCard({
   event,
   status,
@@ -883,6 +1000,13 @@ export default function EventCard({
   event: ParsedEvent;
   status: EventCardStatus;
   error: string | null;
+  /**
+   * True when this card was already sent to Google Calendar, but the note
+   * has since been edited in a way that changes this same event -- e.g. the
+   * user changed the time or added an attendee in the note text. The card
+   * stays showing the real, already-created event until "Update event" is
+   * clicked, rather than a second card being created alongside it.
+   */
   dirty: boolean;
   meetLink: string | null;
   meetPhone: string | null;
@@ -969,11 +1093,10 @@ export default function EventCard({
               <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint">
                 Date
               </label>
-              <input
-                type="date"
-                className={inputClasses}
+              <DateField
                 value={event.date}
-                onChange={(e) => set("date", e.target.value)}
+                disabled={sent || sending}
+                onChange={(v) => set("date", v)}
               />
             </div>
             <div>
