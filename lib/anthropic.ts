@@ -13,6 +13,30 @@ const RULE_SET_KEYS: RuleSetKey[] = [
 
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
 
+/**
+ * The three discovery-response rule sets are identifiable from a handful
+ * of unambiguous keywords, unlike the four court/jurisdiction rule sets
+ * (which genuinely need the model's own read of which court was named).
+ * Used by normalizeEvent to cross-check courtDetected + documentServed
+ * against suggestedRuleSet/documentServed and catch the model letting
+ * those fields drift out of sync within a single extraction call -- e.g.
+ * courtDetected correctly reads "Request for Production" but
+ * suggestedRuleSet/documentServed are left over as "interrogatories" /
+ * "Interrogatories" from earlier in its own reasoning. Without this, a
+ * still-pending card can render self-contradictory fields, since
+ * page.tsx's merge logic treats a fresh parse for a not-yet-confirmed
+ * card as fully authoritative, verbatim -- there's no later step that
+ * would otherwise catch the mismatch.
+ */
+function resolveDiscoveryRuleSet(text: string): { ruleSet: RuleSetKey; label: string } | null {
+  if (/interrogator/i.test(text)) return { ruleSet: "interrogatories", label: "Interrogatories" };
+  if (/admission/i.test(text)) return { ruleSet: "admissions", label: "Requests for Admission" };
+  if (/request\s+for\s+(production|documents?)|produc(e|tion|ing)\s+(of\s+)?documents?/i.test(text)) {
+    return { ruleSet: "production", label: "Request for Production" };
+  }
+  return null;
+}
+
 // The @anthropic-ai/sdk client's own HTTP transport (its retry/timeout/
 // AbortController wrapping around fetch) triggers "[unenv] https.request is
 // not implemented yet!" and, once that Workers compat flag is turned on, a
@@ -275,22 +299,42 @@ function normalizeEvent(raw: Record<string, unknown>, nowLocal: string): ParsedE
   const courtDetected =
     typeof raw.courtDetected === "string" && raw.courtDetected.trim() ? raw.courtDetected.trim() : null;
 
+  // Start from what the model itself said, then let resolveDiscoveryRuleSet
+  // deterministically overrule it whenever courtDetected/documentServed
+  // together contain an unambiguous discovery-type keyword -- see that
+  // function's doc comment for why this exists: the model can let
+  // suggestedRuleSet/documentServed disagree with its own courtDetected
+  // text within a single response, and this is what catches it before it
+  // ever reaches the card.
+  let resolvedRuleSet: RuleSetKey | null =
+    typeof raw.suggestedRuleSet === "string" && RULE_SET_KEYS.includes(raw.suggestedRuleSet as RuleSetKey)
+      ? (raw.suggestedRuleSet as RuleSetKey)
+      : null;
+  let resolvedDocumentServed = typeof raw.documentServed === "string" ? raw.documentServed.trim() : "";
+
+  if (courtDetected) {
+    const discoveryMatch = resolveDiscoveryRuleSet(`${courtDetected} ${resolvedDocumentServed}`);
+    if (discoveryMatch) {
+      resolvedRuleSet = discoveryMatch.ruleSet;
+      // Only overwrite documentServed if it doesn't already name the same
+      // discovery type -- a more specific model-written value (e.g. "Second
+      // Set of Interrogatories") is worth keeping over the generic label.
+      if (!resolveDiscoveryRuleSet(resolvedDocumentServed)) {
+        resolvedDocumentServed = discoveryMatch.label;
+      }
+    }
+  }
+
   const courtRules: CourtRulesInfo | null = courtDetected
     ? {
         detectedCourt: courtDetected,
-        suggestedRuleSet:
-          typeof raw.suggestedRuleSet === "string" && RULE_SET_KEYS.includes(raw.suggestedRuleSet as RuleSetKey)
-            ? (raw.suggestedRuleSet as RuleSetKey)
-            : null,
-        ruleSet:
-          typeof raw.suggestedRuleSet === "string" && RULE_SET_KEYS.includes(raw.suggestedRuleSet as RuleSetKey)
-            ? (raw.suggestedRuleSet as RuleSetKey)
-            : null,
+        suggestedRuleSet: resolvedRuleSet,
+        ruleSet: resolvedRuleSet,
         serviceDate:
           typeof raw.serviceDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.serviceDate) ? raw.serviceDate : null,
         // Defaults true (the common case) unless the model explicitly says false.
         mailOrElectronicService: raw.mailOrElectronicService !== false,
-        documentServed: typeof raw.documentServed === "string" ? raw.documentServed.trim() : "",
+        documentServed: resolvedDocumentServed,
         caseNumber: typeof raw.caseNumber === "string" ? raw.caseNumber.trim() : "",
         status: "pending",
       }
