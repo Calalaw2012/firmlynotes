@@ -18,23 +18,32 @@ export interface Attendee {
 }
 
 /**
- * The deadline types the court-rules cascade knows how to compute a due
- * date under. The first four are jurisdiction/court rule sets governing a
- * motion's opposition deadline -- "marcp" (the bare Rules of Civil
- * Procedure) has no opposition period of its own -- see lib/courtRules.ts
- * -- but still needs a key so the dropdown and citation link can point at
- * it. The last three are MA discovery-response deadlines, which run under
- * a fixed statewide rule (33/34/36) rather than any particular court's
- * local rules, and apply regardless of which court the case is in.
+ * The four jurisdiction/court rule sets the court-rules cascade knows how
+ * to compute a motion's opposition deadline under. "marcp" (the bare
+ * Rules of Civil Procedure) has no opposition period of its own -- see
+ * lib/courtRules.ts -- but still needs a key so the dropdown and citation
+ * link can point at it.
+ *
+ * A discovery response (interrogatories, request for production, request
+ * for admissions) is NOT a separate entry here -- Mass. R. Civ. P. 33/34/36
+ * are themselves part of the Rules of Civil Procedure, not a rival rule
+ * set, so a discovery deadline is always confirmed under "marcp" and its
+ * specific 30/45-day period is picked up automatically from what
+ * CourtRulesInfo.documentServed says (see DiscoveryType/detectDiscoveryType
+ * in lib/courtRules.ts). Keeping the discovery types out of this union is
+ * what keeps them out of the "Select rule set" dropdown, which lists only
+ * RuleSetKey values.
  */
-export type RuleSetKey =
-  | "marcp"
-  | "malandct"
-  | "masuperior"
-  | "maappellate"
-  | "interrogatories"
-  | "production"
-  | "admissions";
+export type RuleSetKey = "marcp" | "malandct" | "masuperior" | "maappellate";
+
+/**
+ * A Massachusetts discovery device with its own fixed statewide response
+ * period under the Rules of Civil Procedure, independent of which trial
+ * court the case is in. Detected from CourtRulesInfo.documentServed (see
+ * detectDiscoveryType in lib/courtRules.ts) only when ruleSet is "marcp" --
+ * never its own RuleSetKey/dropdown entry, per the note on RuleSetKey above.
+ */
+export type DiscoveryType = "interrogatories" | "production" | "admissions";
 
 /**
  * Present on a ParsedEvent only when the note appears to describe a
