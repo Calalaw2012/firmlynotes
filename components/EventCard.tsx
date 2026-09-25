@@ -425,18 +425,21 @@ function VideoDetails({
 // feedback with a live "Event description" preview (built from what was
 // served + the service date, exactly what gets saved to Google), a
 // multi-reminder editor and an attendees editor once confirmed (previously
-// neither was exposed for a court-deadline event at all), and a Superior
+// neither was exposed for a court-deadline event at all), a Superior
 // Court summary-judgment switch (Rule 9A(b)(1)'s 21-day opposition period
 // instead of Rule 9A(b)(4)'s general 10-day one, read off what was
-// served). Renders only when event.courtRules is non-null -- an ordinary
-// event is completely unaffected by any of this. See
+// served), and an initiating-pleading switch (Rule 12(a)(1)'s fixed
+// 20-day Answer period for a Complaint/Counterclaim/Cross-Claim, read the
+// same way -- see isInitialPleading in lib/courtRules.ts). Renders only
+// when event.courtRules is non-null -- an ordinary event is completely
+// unaffected by any of this. See
 // claude/court-rules-feature-approved-mockup-2026-09-22.md in the project
 // for the original approved design and the researched rule citations.
 
 const RULE_SET_ORDER: RuleSetKey[] = ["marcp", "malandct", "masuperior", "maappellate"];
 
-/** The confirmed-cascade's headline label for what's actually due -- most rule sets are an opposition to a motion, but a marcp deadline detected as a discovery response is a response to a request instead, so the label should say what the deadline actually is. */
-function responseLabelFor(ruleSet: RuleSetKey, discoveryType: DiscoveryType | null): string {
+/** The confirmed-cascade's headline label for what's actually due -- most rule sets are an opposition to a motion, but a marcp deadline detected as a discovery response is a response to a request instead, and one detected as an initiating pleading is an Answer, so the label should say what the deadline actually is. */
+function responseLabelFor(ruleSet: RuleSetKey, discoveryType: DiscoveryType | null, isInitial: boolean): string {
   if (ruleSet === "marcp") {
     switch (discoveryType) {
       case "interrogatories":
@@ -448,6 +451,7 @@ function responseLabelFor(ruleSet: RuleSetKey, discoveryType: DiscoveryType | nu
       default:
         break;
     }
+    if (isInitial) return "Answer due";
   }
   return "Opposition to motion due";
 }
@@ -474,6 +478,11 @@ function courtRulesIsSummaryJudgment(cr: CourtRulesInfo): boolean {
 /** The discovery device a confirmed marcp deadline's documentServed names, if any -- see detectDiscoveryType in lib/courtRules.ts. Only meaningful (and only ever non-null) when ruleSet is "marcp"; every other rule set's deadline comes from KNOWN_OPPOSITION_DAYS instead. */
 function courtRulesDiscoveryType(cr: CourtRulesInfo): DiscoveryType | null {
   return cr.ruleSet === "marcp" ? detectDiscoveryType(cr.documentServed) : null;
+}
+
+/** True when a confirmed marcp deadline's documentServed names an initiating pleading requiring an Answer under Rule 12(a)(1) -- see isInitialPleading in lib/courtRules.ts. Only meaningful when ruleSet is "marcp"; mutually exclusive with courtRulesDiscoveryType by construction (isInitialPleading and detectDiscoveryType never both match the same text). */
+function courtRulesIsInitialPleading(cr: CourtRulesInfo): boolean {
+  return cr.ruleSet === "marcp" && isInitialPleading(cr.documentServed);
 }
 
 type DayState = "service" | "service-due" | "due" | "landing" | "counted" | "counted-noncourt" | "outside";
@@ -688,12 +697,15 @@ function PendingRuleSetPicker({
   const isSuggested = selected != null && selected === cr.suggestedRuleSet;
   const isSJ = courtRulesIsSummaryJudgment(cr);
   const discoveryType = courtRulesDiscoveryType(cr);
+  const isInitial = courtRulesIsInitialPleading(cr);
   const link = selected
     ? isSJ
       ? SUPERIOR_SUMMARY_JUDGMENT_LINK
       : discoveryType
-        ? DISCOVERY_LINKS[discoveryType]
-        : RULE_LINKS[selected]
+      ? DISCOVERY_LINKS[discoveryType]
+      : isInitial
+      ? ANSWER_LINK
+      : RULE_LINKS[selected]
     : null;
 
   return (
@@ -762,13 +774,13 @@ function PendingRuleSetPicker({
         <span className="block text-[10.5px] uppercase tracking-wide text-ink-faint">
           Official rule text for this event
         </span>
-               {link ? (
+        {link ? (
           <a href={link.url} target="_blank" rel="noreferrer" className="block text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125">
             {link.label}
           </a>
         ) : (
           <span className="block text-xs text-ink-faint">Select a rule set above to see the specific rule that applies.</span>
-               )}
+        )}
         <a href={RULE_6_LINK.url} target="_blank" rel="noreferrer" className="block text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125">
           {RULE_6_LINK.label}
         </a>
@@ -800,9 +812,16 @@ function ConfirmedCascade({
 }) {
   const isSJ = courtRulesIsSummaryJudgment(cr);
   const discoveryType = courtRulesDiscoveryType(cr);
-  const link = isSJ ? SUPERIOR_SUMMARY_JUDGMENT_LINK : discoveryType ? DISCOVERY_LINKS[discoveryType] : RULE_LINKS[ruleSet];
+  const isInitial = courtRulesIsInitialPleading(cr);
+  const link = isSJ
+    ? SUPERIOR_SUMMARY_JUDGMENT_LINK
+    : discoveryType
+    ? DISCOVERY_LINKS[discoveryType]
+    : isInitial
+    ? ANSWER_LINK
+    : RULE_LINKS[ruleSet];
   const deadline = serviceDate
-    ? computeDeadline(ruleSet, serviceDate, cr.mailOrElectronicService, isSJ, discoveryType)
+    ? computeDeadline(ruleSet, serviceDate, cr.mailOrElectronicService, isSJ, discoveryType, isInitial)
     : null;
 
   return (
@@ -833,7 +852,9 @@ function ConfirmedCascade({
         <p className="text-[11px] leading-relaxed text-ink-faint">
           {discoveryType
             ? `Detected as ${DISCOVERY_LABELS[discoveryType]} in "Type of document served" — using its own fixed statewide response period under the Rules of Civil Procedure, regardless of which court the case is in.`
-            : `Mass. R. Civ. P. 12(b)(6) doesn't set its own opposition deadline. Naming interrogatories, a request for production, or a request for admissions in "Type of document served" below switches this to that discovery device's fixed response period instead.`}
+            : isInitial
+            ? `Detected as an initiating pleading in "Type of document served" — using Rule 12(a)(1)'s fixed 20-day Answer period under the Rules of Civil Procedure, regardless of which court the case is in.`
+            : `Mass. R. Civ. P. 12(b)(6) doesn't set its own opposition deadline. Naming a Complaint (or other pleading requiring an Answer), interrogatories, a request for production, or a request for admissions in "Type of document served" below switches this to that document's own fixed response period instead.`}
         </p>
       )}
 
@@ -852,8 +873,8 @@ function ConfirmedCascade({
         <>
           <div className="flex items-start justify-between gap-3 rounded-md border border-border-faint bg-bg-elevated p-3">
             <div>
-              <div className="text-sm font-medium text-ink">{responseLabelFor(ruleSet, discoveryType)}</div>
-                            <div className="mt-0.5 text-xs text-ink-faint">
+              <div className="text-sm font-medium text-ink">{responseLabelFor(ruleSet, discoveryType, isInitial)}</div>
+              <div className="mt-0.5 text-xs text-ink-faint">
                 <a href={link.url} target="_blank" rel="noreferrer" className="underline underline-offset-[3px] hover:text-ink">
                   {link.label}
                 </a>{" "}
@@ -880,8 +901,8 @@ function ConfirmedCascade({
       ) : (
         <div className="space-y-2.5">
           <p className="text-xs leading-relaxed text-ink-muted">
-            {ruleSet === "marcp" && !discoveryType
-              ? `${link.label} doesn't itself set an opposition deadline — that's always set by whichever court's own local rules actually apply (Superior Court Rule 9A, Land Court Rule 4, etc.), unless "Type of document served" names a discovery request (interrogatories, request for production, or request for admissions), which has its own fixed response period. Enter the deadline by hand below.`
+            {ruleSet === "marcp" && !discoveryType && !isInitial
+              ? `${link.label} doesn't itself set an opposition deadline — that's always set by whichever court's own local rules actually apply (Superior Court Rule 9A, Land Court Rule 4, etc.), unless "Type of document served" names a Complaint (or other pleading requiring an Answer) or a discovery request (interrogatories, request for production, or request for admissions), each of which has its own fixed response period. Enter the deadline by hand below.`
               : `Enter the date served above to calculate this deadline under ${link.label}.`}
           </p>
           <div>
@@ -943,7 +964,8 @@ function CourtRulesSection({
           nextServiceDate,
           nextCr.mailOrElectronicService,
           courtRulesIsSummaryJudgment(nextCr),
-          courtRulesDiscoveryType(nextCr)
+          courtRulesDiscoveryType(nextCr),
+          courtRulesIsInitialPleading(nextCr)
         )
       : null;
     onChange({
@@ -975,7 +997,8 @@ function CourtRulesSection({
           serviceDate,
           cr.mailOrElectronicService,
           courtRulesIsSummaryJudgment(cr),
-          courtRulesDiscoveryType(cr)
+          courtRulesDiscoveryType(cr),
+          courtRulesIsInitialPleading(cr)
         )
       : null;
     const confirmedCr: CourtRulesInfo = { ...cr, status: "confirmed" };
