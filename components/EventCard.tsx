@@ -1,15 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import type { Attendee, CourtRulesInfo, ParsedEvent, Reminder, RuleSetKey } from "@/types/event";
+import type { Attendee, CourtRulesInfo, DiscoveryType, ParsedEvent, Reminder, RuleSetKey } from "@/types/event";
 import {
   RULE_SET_LABELS,
   RULE_LINKS,
   RULE_6_LINK,
   SUPERIOR_SUMMARY_JUDGMENT_LINK,
-  KNOWN_RESPONSE_DAYS,
+  DISCOVERY_LABELS,
+  DISCOVERY_LINKS,
+  KNOWN_OPPOSITION_DAYS,
   computeDeadline,
   isSummaryJudgmentMotion,
+  detectDiscoveryType,
   buildCourtDeadlineDescription,
   parseISODate,
   formatISODate,
@@ -55,6 +58,7 @@ function formatDuration(totalMinutes: number): string {
   if (minutes || !hours) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
   return parts.join(" and ");
 }
+
 function timeStringToParts(hhmm: string): { h12: number; m: number; ampm: "AM" | "PM" } {
   const [hStr, mStr] = hhmm.split(":");
   const h24 = parseInt(hStr, 10);
@@ -94,7 +98,7 @@ function TimeSelect({
   const { h12, m, ampm } = timeStringToParts(value);
   return (
     <div className="mt-1 flex items-center gap-1.5">
-            <select autoFocus={autoFocus} className={`${inputClasses} w-[58px] shrink-0`} value={h12} onChange={(e) => onChange(partsToTimeString(Number(e.target.value), m, ampm))}>
+      <select autoFocus={autoFocus} className={`${inputClasses} w-[58px] shrink-0`} value={h12} onChange={(e) => onChange(partsToTimeString(Number(e.target.value), m, ampm))}>
         {HOUR_OPTIONS.map((h) => (
           <option key={h} value={h}>
             {h}
@@ -115,6 +119,7 @@ function TimeSelect({
     </div>
   );
 }
+
 function TimeField({
   event,
   disabled,
@@ -186,7 +191,7 @@ function TimeField({
         />
         All day
       </label>
-         {!draftAllDay && (
+      {!draftAllDay && (
         // Two custom <select>-based time pickers, not native <input
         // type="time"> boxes -- see the TimeSelect comment above for why.
         <div className="space-y-2">
@@ -393,29 +398,25 @@ function VideoDetails({
 // claude/court-rules-feature-approved-mockup-2026-09-22.md in the project
 // for the original approved design and the researched rule citations.
 
-const RULE_SET_ORDER: RuleSetKey[] = [
-  "marcp",
-  "malandct",
-  "masuperior",
-  "maappellate",
-  "interrogatories",
-  "production",
-  "admissions",
-];
+const RULE_SET_ORDER: RuleSetKey[] = ["marcp", "malandct", "masuperior", "maappellate"];
 
-/** The confirmed-cascade's headline label for what's actually due -- most rule sets are an opposition to a motion, but the three discovery rule sets are a response to a request instead, so the label should say what the deadline actually is. */
-function responseLabelFor(ruleSet: RuleSetKey): string {
-  switch (ruleSet) {
-    case "interrogatories":
-      return "Interrogatory answers due";
-    case "production":
-      return "Document production due";
-    case "admissions":
-      return "Response to admissions due";
-    default:
-      return "Opposition to motion due";
+/** The confirmed-cascade's headline label for what's actually due -- most rule sets are an opposition to a motion, but a marcp deadline detected as a discovery response is a response to a request instead, so the label should say what the deadline actually is. */
+function responseLabelFor(ruleSet: RuleSetKey, discoveryType: DiscoveryType | null): string {
+  if (ruleSet === "marcp") {
+    switch (discoveryType) {
+      case "interrogatories":
+        return "Interrogatory answers due";
+      case "production":
+        return "Document production due";
+      case "admissions":
+        return "Response to admissions due";
+      default:
+        break;
+    }
   }
+  return "Opposition to motion due";
 }
+
 const DOW_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -433,6 +434,11 @@ function sameISODay(a: Date | null, b: Date | null): boolean {
 /** True when a confirmed Superior Court deadline should use Rule 9A(b)(1)'s 21-day summary-judgment track instead of 9A(b)(4)'s general 10-day one -- see isSummaryJudgmentMotion in lib/courtRules.ts. */
 function courtRulesIsSummaryJudgment(cr: CourtRulesInfo): boolean {
   return cr.ruleSet === "masuperior" && isSummaryJudgmentMotion(cr.documentServed);
+}
+
+/** The discovery device a confirmed marcp deadline's documentServed names, if any -- see detectDiscoveryType in lib/courtRules.ts. Only meaningful (and only ever non-null) when ruleSet is "marcp"; every other rule set's deadline comes from KNOWN_OPPOSITION_DAYS instead. */
+function courtRulesDiscoveryType(cr: CourtRulesInfo): DiscoveryType | null {
+  return cr.ruleSet === "marcp" ? detectDiscoveryType(cr.documentServed) : null;
 }
 
 type DayState = "service" | "service-due" | "due" | "landing" | "counted" | "counted-noncourt" | "outside";
@@ -714,7 +720,7 @@ function PendingRuleSetPicker({
           Official rule text for this event
         </span>
         {link ? (
-          <a
+          
             href={link.url}
             target="_blank"
             rel="noreferrer"
@@ -725,7 +731,7 @@ function PendingRuleSetPicker({
         ) : (
           <span className="block text-xs text-ink-faint">Select a rule set above to see the specific rule that applies.</span>
         )}
-        <a 
+        
           href={RULE_6_LINK.url}
           target="_blank"
           rel="noreferrer"
@@ -760,10 +766,11 @@ function ConfirmedCascade({
   onRemindersChange: (reminders: Reminder[]) => void;
 }) {
   const isSJ = courtRulesIsSummaryJudgment(cr);
-  const link = isSJ ? SUPERIOR_SUMMARY_JUDGMENT_LINK : RULE_LINKS[ruleSet];
-  const knownDays = KNOWN_RESPONSE_DAYS[ruleSet];
-  const deadline =
-    knownDays != null && serviceDate ? computeDeadline(ruleSet, serviceDate, cr.mailOrElectronicService, isSJ) : null;
+  const discoveryType = courtRulesDiscoveryType(cr);
+  const link = isSJ ? SUPERIOR_SUMMARY_JUDGMENT_LINK : discoveryType ? DISCOVERY_LINKS[discoveryType] : RULE_LINKS[ruleSet];
+  const deadline = serviceDate
+    ? computeDeadline(ruleSet, serviceDate, cr.mailOrElectronicService, isSJ, discoveryType)
+    : null;
 
   return (
     <div className="space-y-3 rounded-lg border border-border bg-bg-sunken p-3.5">
@@ -789,6 +796,14 @@ function ConfirmedCascade({
         </p>
       )}
 
+      {ruleSet === "marcp" && (
+        <p className="text-[11px] leading-relaxed text-ink-faint">
+          {discoveryType
+            ? `Detected as ${DISCOVERY_LABELS[discoveryType]} in "Type of document served" — using its own fixed statewide response period under the Rules of Civil Procedure, regardless of which court the case is in.`
+            : `Mass. R. Civ. P. 12(b)(6) doesn't set its own opposition deadline. Naming interrogatories, a request for production, or a request for admissions in "Type of document served" below switches this to that discovery device's fixed response period instead.`}
+        </p>
+      )}
+
       <div className="rounded-md border border-border-faint bg-bg-elevated p-3">
         <div className="mb-1 text-[10.5px] uppercase tracking-wide text-ink-faint">Event description</div>
         <p className="text-xs leading-relaxed text-ink">
@@ -804,9 +819,9 @@ function ConfirmedCascade({
         <>
           <div className="flex items-start justify-between gap-3 rounded-md border border-border-faint bg-bg-elevated p-3">
             <div>
-              <div className="text-sm font-medium text-ink">{responseLabelFor(ruleSet)}</div>
+              <div className="text-sm font-medium text-ink">{responseLabelFor(ruleSet, discoveryType)}</div>
               <div className="mt-0.5 text-xs text-ink-faint">
-                <a
+                
                   href={link.url}
                   target="_blank"
                   rel="noreferrer"
@@ -837,8 +852,8 @@ function ConfirmedCascade({
       ) : (
         <div className="space-y-2.5">
           <p className="text-xs leading-relaxed text-ink-muted">
-            {ruleSet === "marcp"
-              ? `${link.label} doesn't itself set an opposition deadline — that's always set by whichever court's own local rules actually apply (Superior Court Rule 9A, Land Court Rule 4, etc.). Enter the deadline by hand below.`
+            {ruleSet === "marcp" && !discoveryType
+              ? `${link.label} doesn't itself set an opposition deadline — that's always set by whichever court's own local rules actually apply (Superior Court Rule 9A, Land Court Rule 4, etc.), unless "Type of document served" names a discovery request (interrogatories, request for production, or request for admissions), which has its own fixed response period. Enter the deadline by hand below.`
               : `Enter the date served above to calculate this deadline under ${link.label}.`}
           </p>
           <div>
@@ -894,10 +909,15 @@ function CourtRulesSection({
       onChange({ ...event, courtRules: nextCr });
       return;
     }
-    const deadline =
-      nextServiceDate && KNOWN_RESPONSE_DAYS[nextCr.ruleSet] != null
-        ? computeDeadline(nextCr.ruleSet, nextServiceDate, nextCr.mailOrElectronicService, courtRulesIsSummaryJudgment(nextCr))
-        : null;
+    const deadline = nextServiceDate
+      ? computeDeadline(
+          nextCr.ruleSet,
+          nextServiceDate,
+          nextCr.mailOrElectronicService,
+          courtRulesIsSummaryJudgment(nextCr),
+          courtRulesDiscoveryType(nextCr)
+        )
+      : null;
     onChange({
       ...event,
       date: deadline ? formatISODate(deadline.due) : event.date,
@@ -922,7 +942,13 @@ function CourtRulesSection({
   function handleConfirm() {
     if (!cr.ruleSet) return;
     const deadline = serviceDate
-      ? computeDeadline(cr.ruleSet, serviceDate, cr.mailOrElectronicService, courtRulesIsSummaryJudgment(cr))
+      ? computeDeadline(
+          cr.ruleSet,
+          serviceDate,
+          cr.mailOrElectronicService,
+          courtRulesIsSummaryJudgment(cr),
+          courtRulesDiscoveryType(cr)
+        )
       : null;
     const confirmedCr: CourtRulesInfo = { ...cr, status: "confirmed" };
     onChange({
