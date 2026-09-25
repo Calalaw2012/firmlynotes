@@ -101,7 +101,9 @@ export const RULE_6_LINK = {
  * the two whenever ruleSet is "masuperior". A discovery response
  * (interrogatories/production/admissions) is handled the same way one
  * level down, under "marcp" -- see KNOWN_DISCOVERY_DAYS and
- * detectDiscoveryType below.
+ * detectDiscoveryType below. An initiating pleading requiring an Answer
+ * (Complaint/Counterclaim/Cross-Claim) is handled the same way again --
+ * see ANSWER_DAYS and isInitialPleading below.
  */
 export const KNOWN_OPPOSITION_DAYS: Partial<Record<RuleSetKey, number>> = {
   masuperior: 10,
@@ -148,6 +150,41 @@ export function detectDiscoveryType(documentServed: string): DiscoveryType | nul
     return "production";
   }
   return null;
+}
+
+/**
+ * Mass. R. Civ. P. 12(a)(1): a party served with a pleading requiring a
+ * responsive pleading -- a Complaint, Amended Complaint, Counterclaim, or
+ * Cross-Claim -- must serve its Answer within 20 days, fixed statewide,
+ * regardless of which court the case is in. Structurally the same kind of
+ * fixed statewide period as a discovery device's (see
+ * KNOWN_DISCOVERY_DAYS/detectDiscoveryType above), and confirmed under
+ * "marcp" the same way -- not the local-court-rule-dependent motion
+ * opposition period Rule 12(b)(6) itself has none of. Verified against the
+ * current text of Rule 12(a)(1) on mass.gov.
+ */
+export const ANSWER_DAYS = 20;
+
+export const ANSWER_LINK = {
+  label: "Mass. R. Civ. P. 12(a)(1) — Time to Answer",
+  url: RULE_LINKS.marcp.url,
+};
+
+/**
+ * True when documentServed is an initiating pleading that requires a
+ * responsive pleading (an Answer) under Rule 12(a)(1) -- a Complaint,
+ * Amended Complaint, Counterclaim, or Cross-Claim -- rather than a motion,
+ * by the same simple, deliberately narrow keyword matching as
+ * detectDiscoveryType/isSummaryJudgmentMotion above. Excludes anything
+ * that also mentions "motion" so a filing like "Motion to Dismiss
+ * Complaint" -- which is a motion, not the complaint itself triggering an
+ * answer -- never collides with the MTD/9A/Land-Court-Rule-4 opposition
+ * track. Only meaningful when ruleSet is "marcp"; see
+ * courtRulesIsInitialPleading in components/EventCard.tsx.
+ */
+export function isInitialPleading(documentServed: string): boolean {
+  if (/motion/i.test(documentServed)) return false;
+  return /complaint|counterclaim|cross[-\s]?claim/i.test(documentServed);
 }
 
 /**
@@ -324,8 +361,9 @@ export function computeRule6Result(serviceDate: Date, prescribedDays: number): R
  * Full computation for a rule set + service date, applying Rule 6(d)'s +3
  * days for mail/email/EFSP service before running the Rule 6(a) count.
  * Returns null when neither a known day count nor a recognized discovery
- * type applies, or the service date is missing -- callers should show the
- * manual-entry / no-deadline-of-its-own explanation in that case instead.
+ * type / initiating pleading applies, or the service date is missing --
+ * callers should show the manual-entry / no-deadline-of-its-own
+ * explanation in that case instead.
  *
  * isSummaryJudgment (default false) only matters when ruleSet is
  * "masuperior": true switches the base day count from Rule 9A(b)(4)'s
@@ -338,19 +376,29 @@ export function computeRule6Result(serviceDate: Date, prescribedDays: number): R
  * "no deadline of its own" null result. Callers pass
  * detectDiscoveryType(cr.documentServed) -- see courtRulesDiscoveryType in
  * components/EventCard.tsx.
+ *
+ * isInitialPleadingFlag (default false) only matters when ruleSet is
+ * "marcp" and discoveryType is null: when true, it switches the base day
+ * count to Rule 12(a)(1)'s fixed 20-day Answer period (ANSWER_DAYS)
+ * instead of marcp's usual "no deadline of its own" null result. Callers
+ * pass isInitialPleading(cr.documentServed) -- see
+ * courtRulesIsInitialPleading in components/EventCard.tsx.
  */
 export function computeDeadline(
   ruleSet: RuleSetKey,
   serviceDate: Date,
   mailOrElectronicService: boolean,
   isSummaryJudgment: boolean = false,
-  discoveryType: DiscoveryType | null = null
+  discoveryType: DiscoveryType | null = null,
+  isInitialPleadingFlag: boolean = false
 ): (Rule6Result & { effectiveDays: number; baseDays: number }) | null {
   const baseDays =
     ruleSet === "masuperior" && isSummaryJudgment
       ? SUPERIOR_SUMMARY_JUDGMENT_DAYS
       : ruleSet === "marcp" && discoveryType
       ? KNOWN_DISCOVERY_DAYS[discoveryType]
+      : ruleSet === "marcp" && isInitialPleadingFlag
+      ? ANSWER_DAYS
       : KNOWN_OPPOSITION_DAYS[ruleSet];
   if (baseDays == null) return null;
   const effectiveDays = mailOrElectronicService ? baseDays + 3 : baseDays;
