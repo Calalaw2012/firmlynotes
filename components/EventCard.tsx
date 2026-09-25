@@ -719,24 +719,14 @@ function PendingRuleSetPicker({
         <span className="block text-[10.5px] uppercase tracking-wide text-ink-faint">
           Official rule text for this event
         </span>
-        {link ? (
-          
-            href={link.url}
-            target="_blank"
-            rel="noreferrer"
-            className="block text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125"
-          >
+               {link ? (
+          <a href={link.url} target="_blank" rel="noreferrer" className="block text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125">
             {link.label}
           </a>
         ) : (
           <span className="block text-xs text-ink-faint">Select a rule set above to see the specific rule that applies.</span>
-        )}
-        
-          href={RULE_6_LINK.url}
-          target="_blank"
-          rel="noreferrer"
-          className="block text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125"
-        >
+               )}
+        <a href={RULE_6_LINK.url} target="_blank" rel="noreferrer" className="block text-xs text-indigo-text underline underline-offset-[3px] hover:brightness-125">
           {RULE_6_LINK.label}
         </a>
       </div>
@@ -820,13 +810,8 @@ function ConfirmedCascade({
           <div className="flex items-start justify-between gap-3 rounded-md border border-border-faint bg-bg-elevated p-3">
             <div>
               <div className="text-sm font-medium text-ink">{responseLabelFor(ruleSet, discoveryType)}</div>
-              <div className="mt-0.5 text-xs text-ink-faint">
-                
-                  href={link.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline underline-offset-[3px] hover:text-ink"
-                >
+                            <div className="mt-0.5 text-xs text-ink-faint">
+                <a href={link.url} target="_blank" rel="noreferrer" className="underline underline-offset-[3px] hover:text-ink">
                   {link.label}
                 </a>{" "}
                 · {deadline.baseDays} days after service
