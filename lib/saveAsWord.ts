@@ -1,4 +1,13 @@
-import { Document, Packer, Paragraph, TextRun } from "docx";
+import {
+  AlignmentType,
+  Document,
+  Footer,
+  Header,
+  Packer,
+  PageNumber,
+  Paragraph,
+  TextRun,
+} from "docx";
 
 /**
  * Turns free-form note text into a .docx file and saves it, letting the
@@ -8,10 +17,11 @@ import { Document, Packer, Paragraph, TextRun } from "docx";
  * Firefox and Safari, which don't implement showSaveFilePicker.
  */
 export async function saveNoteAsWordDoc(
-  text: string
+  text: string,
+  userName: string
 ): Promise<{ saved: boolean; filename: string }> {
-  const filename = deriveFilename(text);
-  const blob = await buildDocxBlob(text);
+  const filename = deriveFilename(userName);
+  const blob = await buildDocxBlob(text, filename);
 
   const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker })
     .showSaveFilePicker;
@@ -48,23 +58,86 @@ export async function saveNoteAsWordDoc(
   return { saved: true, filename };
 }
 
-function deriveFilename(text: string): string {
-  const firstLine = text
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.length > 0);
-  const base = (firstLine ?? "Note").replace(/[^a-zA-Z0-9 _-]+/g, " ").trim();
-  const truncated = base.slice(0, 60).trim() || "Note";
-  return `${truncated}.docx`;
+/**
+ * "Notes - Peter Calabrese, 09.25.2026, 5:38 p.m..docx" -- the signed-in
+ * user's display name plus the date and time of the download itself, not
+ * anything derived from the note's own text.
+ */
+function deriveFilename(userName: string): string {
+  const safeName = userName.trim().replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim() || "Notes";
+  const now = new Date();
+  return `Notes - ${safeName}, ${formatDownloadDate(now)}, ${formatDownloadTime(now)}.docx`;
 }
 
-async function buildDocxBlob(text: string): Promise<Blob> {
+function formatDownloadDate(d: Date): string {
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mm}.${dd}.${d.getFullYear()}`;
+}
+
+function formatDownloadTime(d: Date): string {
+  const h24 = d.getHours();
+  const ampm = h24 >= 12 ? "p.m." : "a.m.";
+  let h = h24 % 12;
+  if (h === 0) h = 12;
+  return `${h}:${String(d.getMinutes()).padStart(2, "0")} ${ampm}`;
+}
+
+// Small, muted gray -- Word's own default header/footer color -- so the
+// filename and page number read as page furniture, not body text.
+const HEADER_FOOTER_COLOR = "595959";
+const HEADER_FOOTER_SIZE = 18; // half-points -- 9pt
+
+async function buildDocxBlob(text: string, filename: string): Promise<Blob> {
   const lines = text.split("\n");
   const paragraphs = (lines.length ? lines : [""]).map(
     (line) => new Paragraph({ children: [new TextRun(line)] })
   );
+
+  // The header/footer repeat the same name the user sees in the save
+  // dialog, minus the .docx extension -- so a printed or emailed copy is
+  // still identifiable once it's out of the file system.
+  const displayName = filename.replace(/\.docx$/i, "");
+
   const doc = new Document({
-    sections: [{ properties: {}, children: paragraphs }],
+    sections: [
+      {
+        properties: {},
+        headers: {
+          default: new Header({
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                children: [
+                  new TextRun({
+                    text: displayName,
+                    size: HEADER_FOOTER_SIZE,
+                    color: HEADER_FOOTER_COLOR,
+                  }),
+                ],
+              }),
+            ],
+          }),
+        },
+        footers: {
+          default: new Footer({
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                children: [
+                  new TextRun({
+                    children: [PageNumber.CURRENT],
+                    size: HEADER_FOOTER_SIZE,
+                    color: HEADER_FOOTER_COLOR,
+                  }),
+                ],
+              }),
+            ],
+          }),
+        },
+        children: paragraphs,
+      },
+    ],
   });
   return Packer.toBlob(doc);
 }
