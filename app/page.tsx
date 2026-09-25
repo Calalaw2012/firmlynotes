@@ -404,9 +404,13 @@ export default function Home() {
   // tool creates -- injected here (client-side, into every fresh parse
   // result) rather than in the AI prompt, so it's guaranteed regardless of
   // whether the note happens to mention the note-taker.
-  const selfAttendee: Attendee | null = session?.user?.email
+   const selfAttendee: Attendee | null = session?.user?.email
     ? { name: session.user.name || session.user.email, email: session.user.email }
     : null;
+
+  // Used only to name the downloaded Word doc -- falls back to email when
+  // Google didn't give us a display name.
+  const userName = session?.user?.name || session?.user?.email || "";
 
   // NextAuth redirects rejected sign-ins back to "/?error=...". Read it once
   // on load, show it, then clean the URL so refreshing doesn't re-show it.
@@ -657,13 +661,14 @@ export default function Home() {
             note that goes back to having zero cards collapses back to one
             column. */}
         <div className={`grid grid-cols-1 gap-6 ${cards.length > 0 ? "md:grid-cols-2" : ""}`}>
-          <NoteComposer
-            value={noteText}
-            onChange={setNoteText}
-            onClear={clearNote}
-            parsing={parsing}
-            countdown={countdown}
-          />
+            <NoteComposer
+              value={noteText}
+              onChange={setNoteText}
+              onClear={clearNote}
+              parsing={parsing}
+              countdown={countdown}
+              userName={userName}
+            />
 
           {cards.length > 0 && (
             <div className="space-y-4">
