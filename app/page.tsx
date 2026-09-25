@@ -9,8 +9,14 @@ import EventCard, { type EventCardStatus } from "@/components/EventCard";
 import RecentList, { type RecentEntry } from "@/components/RecentList";
 import Banner from "@/components/Banner";
 import type { Attendee, CourtRulesInfo, ParsedEvent, Reminder } from "@/types/event";
-import { buildCourtDeadlineDescription, computeDeadline, formatISODate, isSummaryJudgmentMotion, parseISODate } from "@/lib/courtRules";
-
+import {
+  buildCourtDeadlineDescription,
+  computeDeadline,
+  detectDiscoveryType,
+  formatISODate,
+  isSummaryJudgmentMotion,
+  parseISODate,
+} from "@/lib/courtRules";
 const PARSE_DEBOUNCE_MS = 5000;
 const MIN_LENGTH_TO_PARSE = 12;
 
@@ -168,7 +174,10 @@ function recomputeCourtRules(event: ParsedEvent): ParsedEvent {
   if (!cr || cr.status !== "confirmed" || !cr.ruleSet) return event;
   const serviceDate = cr.serviceDate ? parseISODate(cr.serviceDate) : null;
   const isSJ = cr.ruleSet === "masuperior" && isSummaryJudgmentMotion(cr.documentServed);
-  const deadline = serviceDate ? computeDeadline(cr.ruleSet, serviceDate, cr.mailOrElectronicService, isSJ) : null;
+  const discoveryType = cr.ruleSet === "marcp" ? detectDiscoveryType(cr.documentServed) : null;
+  const deadline = serviceDate
+    ? computeDeadline(cr.ruleSet, serviceDate, cr.mailOrElectronicService, isSJ, discoveryType)
+    : null;
   return {
     ...event,
     date: deadline ? formatISODate(deadline.due) : event.date,
