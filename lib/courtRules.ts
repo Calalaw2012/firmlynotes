@@ -1,4 +1,4 @@
-import type { RuleSetKey } from "@/types/event";
+import type { DiscoveryType, RuleSetKey } from "@/types/event";
 
 /**
  * Massachusetts court-deadline computation, per Mass. R. Civ. P. 6 layered
@@ -18,9 +18,6 @@ export const RULE_SET_LABELS: Record<RuleSetKey, string> = {
   malandct: "MA Land Court Rules",
   masuperior: "MA Superior Court Rules",
   maappellate: "MA Rules of Appellate Procedure",
-  interrogatories: "Interrogatories (Mass. R. Civ. P. 33)",
-  production: "Request for Production (Mass. R. Civ. P. 34)",
-  admissions: "Request for Admissions (Mass. R. Civ. P. 36)",
 };
 
 export const RULE_LINKS: Record<RuleSetKey, { label: string; url: string }> = {
@@ -40,6 +37,22 @@ export const RULE_LINKS: Record<RuleSetKey, { label: string; url: string }> = {
     label: "Appellate Procedure Rule 15(a) — Motions",
     url: "https://www.mass.gov/rules-of-appellate-procedure/appellate-procedure-rule-15-motions",
   },
+};
+
+/**
+ * The three MA discovery devices with a fixed statewide response period
+ * under the Rules of Civil Procedure -- confirmed under "marcp" (see the
+ * RuleSetKey/DiscoveryType note in types/event.ts), never a rule set of
+ * their own. Used by ConfirmedCascade in components/EventCard.tsx in place
+ * of RULE_LINKS.marcp once detectDiscoveryType below identifies one.
+ */
+export const DISCOVERY_LABELS: Record<DiscoveryType, string> = {
+  interrogatories: "Interrogatories (Mass. R. Civ. P. 33)",
+  production: "Request for Production (Mass. R. Civ. P. 34)",
+  admissions: "Request for Admissions (Mass. R. Civ. P. 36)",
+};
+
+export const DISCOVERY_LINKS: Record<DiscoveryType, { label: string; url: string }> = {
   interrogatories: {
     label: "Mass. R. Civ. P. 33 — Interrogatories to Parties",
     url: "https://www.mass.gov/rules-of-civil-procedure/civil-procedure-rule-33-interrogatories-to-parties",
@@ -85,11 +98,23 @@ export const RULE_6_LINK = {
  * A summary-judgment motion runs the longer, 21-day track under Rule
  * 9A(b)(1) instead -- see SUPERIOR_SUMMARY_JUDGMENT_DAYS and
  * isSummaryJudgmentMotion, which computeDeadline consults to pick between
- * the two whenever ruleSet is "masuperior".
- *
- * The last three entries are MA discovery-response deadlines, which run
- * under a fixed statewide rule rather than any court's local rules, so
- * they apply the same day count no matter which court the case is in:
+ * the two whenever ruleSet is "masuperior". A discovery response
+ * (interrogatories/production/admissions) is handled the same way one
+ * level down, under "marcp" -- see KNOWN_DISCOVERY_DAYS and
+ * detectDiscoveryType below.
+ */
+export const KNOWN_OPPOSITION_DAYS: Partial<Record<RuleSetKey, number>> = {
+  masuperior: 10,
+  malandct: 30,
+  maappellate: 7,
+};
+
+/**
+ * The response period for each MA discovery device, in days after
+ * service, under the Rules of Civil Procedure -- fixed statewide, so it
+ * applies the same way no matter which court the case is in. Consulted by
+ * computeDeadline only when ruleSet is "marcp" and detectDiscoveryType
+ * below identifies which device documentServed describes.
  * - interrogatories: Mass. R. Civ. P. 33(a)(3) -- 45 days after service,
  *   flat (no shorter period for a defendant's first response, unlike 34/36).
  * - production: Mass. R. Civ. P. 34(b) -- 30 days after service of the
@@ -97,18 +122,33 @@ export const RULE_6_LINK = {
  *   served the summons and complaint itself -- that defendant's-first-
  *   response exception isn't modeled here; the app always requires the
  *   user to confirm before anything is relied on, same as every other
- *   rule set below).
+ *   deadline this module computes).
  * - admissions: Mass. R. Civ. P. 36(a) -- 30 days after service, same
  *   defendant's-first-response exception as Rule 34, not modeled here.
  */
-export const KNOWN_RESPONSE_DAYS: Partial<Record<RuleSetKey, number>> = {
-  masuperior: 10,
-  malandct: 30,
-  maappellate: 7,
+export const KNOWN_DISCOVERY_DAYS: Record<DiscoveryType, number> = {
   interrogatories: 45,
   production: 30,
   admissions: 30,
 };
+
+/**
+ * True when documentServed names a discovery device with its own fixed
+ * response period under the Rules of Civil Procedure, by simple,
+ * deliberately narrow keyword matching -- the same approach
+ * isSummaryJudgmentMotion below uses for a summary-judgment motion. Only
+ * meaningful when ruleSet is "marcp"; see courtRulesDiscoveryType in
+ * components/EventCard.tsx and app/page.tsx's recomputeCourtRules, both of
+ * which gate on that before calling this.
+ */
+export function detectDiscoveryType(documentServed: string): DiscoveryType | null {
+  if (/interrogator/i.test(documentServed)) return "interrogatories";
+  if (/admission/i.test(documentServed)) return "admissions";
+  if (/request\s+for\s+(production|documents?)|produc(e|tion|ing)\s+(of\s+)?documents?/i.test(documentServed)) {
+    return "production";
+  }
+  return null;
+}
 
 /**
  * Rule 9A(b)(1)'s opposition period for a summary-judgment motion
@@ -283,23 +323,35 @@ export function computeRule6Result(serviceDate: Date, prescribedDays: number): R
 /**
  * Full computation for a rule set + service date, applying Rule 6(d)'s +3
  * days for mail/email/EFSP service before running the Rule 6(a) count.
- * Returns null when the rule set has no known day count (marcp) or the
- * service date is missing -- callers should show the manual-entry / no-
- * deadline-of-its-own explanation in that case instead.
+ * Returns null when neither a known day count nor a recognized discovery
+ * type applies, or the service date is missing -- callers should show the
+ * manual-entry / no-deadline-of-its-own explanation in that case instead.
  *
  * isSummaryJudgment (default false) only matters when ruleSet is
  * "masuperior": true switches the base day count from Rule 9A(b)(4)'s
  * general 10 days to Rule 9A(b)(1)'s 21 days for a summary-judgment
  * motion. Callers pass isSummaryJudgmentMotion(cr.documentServed).
+ *
+ * discoveryType (default null) only matters when ruleSet is "marcp": when
+ * set, it switches the base day count to that discovery device's own
+ * fixed response period (KNOWN_DISCOVERY_DAYS) instead of marcp's usual
+ * "no deadline of its own" null result. Callers pass
+ * detectDiscoveryType(cr.documentServed) -- see courtRulesDiscoveryType in
+ * components/EventCard.tsx.
  */
 export function computeDeadline(
   ruleSet: RuleSetKey,
   serviceDate: Date,
   mailOrElectronicService: boolean,
-  isSummaryJudgment: boolean = false
+  isSummaryJudgment: boolean = false,
+  discoveryType: DiscoveryType | null = null
 ): (Rule6Result & { effectiveDays: number; baseDays: number }) | null {
   const baseDays =
-    ruleSet === "masuperior" && isSummaryJudgment ? SUPERIOR_SUMMARY_JUDGMENT_DAYS : KNOWN_RESPONSE_DAYS[ruleSet];
+    ruleSet === "masuperior" && isSummaryJudgment
+      ? SUPERIOR_SUMMARY_JUDGMENT_DAYS
+      : ruleSet === "marcp" && discoveryType
+      ? KNOWN_DISCOVERY_DAYS[discoveryType]
+      : KNOWN_OPPOSITION_DAYS[ruleSet];
   if (baseDays == null) return null;
   const effectiveDays = mailOrElectronicService ? baseDays + 3 : baseDays;
   return { ...computeRule6Result(serviceDate, effectiveDays), effectiveDays, baseDays };
