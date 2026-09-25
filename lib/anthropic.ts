@@ -1,38 +1,33 @@
 import type { Attendee, CourtRulesInfo, ParsedEvent, Reminder, RuleSetKey } from "@/types/event";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const RULE_SET_KEYS: RuleSetKey[] = [
-  "marcp",
-  "malandct",
-  "masuperior",
-  "maappellate",
-  "interrogatories",
-  "production",
-  "admissions",
-];
+const RULE_SET_KEYS: RuleSetKey[] = ["marcp", "malandct", "masuperior", "maappellate"];
 
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
 
 /**
- * The three discovery-response rule sets are identifiable from a handful
- * of unambiguous keywords, unlike the four court/jurisdiction rule sets
- * (which genuinely need the model's own read of which court was named).
- * Used by normalizeEvent to cross-check courtDetected + documentServed
- * against suggestedRuleSet/documentServed and catch the model letting
- * those fields drift out of sync within a single extraction call -- e.g.
- * courtDetected correctly reads "Request for Production" but
- * suggestedRuleSet/documentServed are left over as "interrogatories" /
- * "Interrogatories" from earlier in its own reasoning. Without this, a
- * still-pending card can render self-contradictory fields, since
- * page.tsx's merge logic treats a fresh parse for a not-yet-confirmed
- * card as fully authoritative, verbatim -- there's no later step that
- * would otherwise catch the mismatch.
+ * A discovery response (interrogatories, request for production, request
+ * for admissions) is identifiable from a handful of unambiguous keywords,
+ * unlike the four court/jurisdiction rule sets (which genuinely need the
+ * model's own read of which court was named). Used by normalizeEvent to
+ * cross-check courtDetected + documentServed and force suggestedRuleSet to
+ * "marcp" -- Mass. R. Civ. P. 33/34/36 are themselves part of the Rules of
+ * Civil Procedure, never a rival rule set (see the RuleSetKey/DiscoveryType
+ * note in types/event.ts) -- catching the model leaving suggestedRuleSet
+ * pointed at some other court, or blank, when courtDetected/documentServed
+ * actually describe a discovery request. Without this, a still-pending
+ * card can render self-contradictory fields, since page.tsx's merge logic
+ * treats a fresh parse for a not-yet-confirmed card as fully authoritative,
+ * verbatim -- there's no later step that would otherwise catch the
+ * mismatch. Returns just the normalized document label; the app's own
+ * detectDiscoveryType (lib/courtRules.ts) is what the UI later uses to
+ * pick the specific 30/45-day period once ruleSet is "marcp".
  */
-function resolveDiscoveryRuleSet(text: string): { ruleSet: RuleSetKey; label: string } | null {
-  if (/interrogator/i.test(text)) return { ruleSet: "interrogatories", label: "Interrogatories" };
-  if (/admission/i.test(text)) return { ruleSet: "admissions", label: "Requests for Admission" };
+function resolveDiscoveryDocumentLabel(text: string): string | null {
+  if (/interrogator/i.test(text)) return "Interrogatories";
+  if (/admission/i.test(text)) return "Requests for Admission";
   if (/request\s+for\s+(production|documents?)|produc(e|tion|ing)\s+(of\s+)?documents?/i.test(text)) {
-    return { ruleSet: "production", label: "Request for Production" };
+    return "Request for Production";
   }
   return null;
 }
@@ -130,22 +125,13 @@ const EVENT_ITEM_SCHEMA = {
     courtDetected: {
       type: ["string", "null"],
       description:
-        "The Massachusetts court name exactly as it appears in the note (e.g. 'Suffolk Superior Court', 'Land Court', 'Appeals Court'), when this event describes a court filing or litigation deadline (an opposition/response due date, a motion deadline, service of process starting a clock, etc.) -- not just any mention of a court in passing. When the deadline instead comes from receiving interrogatories, a request for production, or a request for admissions -- none of which need a named court to answer -- use the document type itself here instead (e.g. 'Interrogatories', 'Request for Production', 'Request for Admissions'), so the detection banner always names something concrete even with no court mentioned. Null for every event that isn't itself a filing/response deadline, including an ordinary court date, hearing, or meeting that happens to be at a courthouse.",
+        "The Massachusetts court name exactly as it appears in the note (e.g. 'Suffolk Superior Court', 'Land Court', 'Appeals Court'), when this event describes a court filing or litigation deadline (an opposition/response due date, a motion deadline, service of process starting a clock, etc.) -- not just any mention of a court in passing. When the deadline instead comes from receiving interrogatories, a request for production, or a request for admissions -- none of which need a named court to answer, since they run under the statewide Rules of Civil Procedure regardless of court -- use the document type itself here instead (e.g. 'Interrogatories', 'Request for Production', 'Request for Admissions'), so the detection banner always names something concrete even with no court mentioned. Null for every event that isn't itself a filing/response deadline, including an ordinary court date, hearing, or meeting that happens to be at a courthouse.",
     },
     suggestedRuleSet: {
       type: ["string", "null"],
-      enum: [
-        "marcp",
-        "malandct",
-        "masuperior",
-        "maappellate",
-        "interrogatories",
-        "production",
-        "admissions",
-        null,
-      ],
+      enum: ["marcp", "malandct", "masuperior", "maappellate", null],
       description:
-        "Only set when courtDetected is non-null. Which of the seven supported deadline types this matches. Check these three FIRST, before the four court/jurisdiction rule sets below, whenever the note describes receiving one of these discovery requests (regardless of whether a specific court is named -- MA Rules of Civil Procedure 33/34/36 govern the response the same way no matter which court the case is in): 'interrogatories' for interrogatories that must be answered, 'production' for a request for production of documents/things that must be responded to, 'admissions' for a request for admissions that must be responded to. Otherwise, for a motion/opposition-style filing deadline, map to exactly one of the four jurisdiction rule sets: 'masuperior' for any MA Superior Court, 'malandct' for the MA Land Court, 'maappellate' for the MA Appeals Court / Rules of Appellate Procedure context, 'marcp' for a general/unspecified MA trial court civil filing with no more specific court named (or an explicit Rule 12(b)(6)/civil-procedure reference). Null if courtDetected is null, or if the deadline doesn't clearly map to one of these seven.",
+        "Only set when courtDetected is non-null. Which of the four supported rule sets this matches. A discovery request -- interrogatories, a request for production, or a request for admissions -- is always 'marcp': Mass. R. Civ. P. 33/34/36 are themselves part of the Rules of Civil Procedure, not a separate rule set, and apply the same way no matter which court the case is in (documentServed is what tells the app which of the three it is, so extract that field carefully whenever you set courtDetected for one of these). Otherwise, for a motion/opposition-style filing deadline, map to exactly one of: 'masuperior' for any MA Superior Court, 'malandct' for the MA Land Court, 'maappellate' for the MA Appeals Court / Rules of Appellate Procedure context, 'marcp' for a general/unspecified MA trial court civil filing with no more specific court named (or an explicit Rule 12(b)(6)/civil-procedure reference). Null if courtDetected is null, or if the deadline doesn't clearly map to one of these four.",
     },
     serviceDate: {
       type: ["string", "null"],
@@ -229,7 +215,7 @@ Default scheduling when the note doesn't give an explicit clock time for an even
 
 Court and filing deadlines (courtDetected/suggestedRuleSet/serviceDate/mailOrElectronicService/documentServed/caseNumber): this firm practices in Massachusetts state courts, so flag an event as a court deadline whenever the note describes an actual filing/response deadline governed by MA court or civil-procedure rules -- e.g. "served with a motion to dismiss," "opposition due," "response deadline," a docketed filing with a court named, AND ALSO a discovery request that must be answered or responded to -- "interrogatories received," "answers to interrogatories due," "request for production served," "they served requests for admission," "RFAs due" -- even when no court is named at all, since Rules 33/34/36 apply the same way regardless of which court the case is in. Do NOT flag an ordinary hearing, meeting, or appointment that merely happens to be at a courthouse -- courtDetected must stay null for those. When you do flag one:
 - courtDetected is the court's name exactly as written in the note, or -- for a discovery request with no court named -- the document type itself (e.g. "Interrogatories", "Request for Production", "Request for Admissions").
-- suggestedRuleSet: check 'interrogatories'/'production'/'admissions' first (per the schema description above) whenever the note describes receiving one of those three discovery requests -- these take priority over the four court/jurisdiction rule sets. Only when none of those three fit, map to exactly one of the four known jurisdiction sets (masuperior/malandct/maappellate/marcp) -- pick the closest match; use 'marcp' as the fallback when a MA trial-court civil filing is described but no more specific court is named.
+- suggestedRuleSet: whenever the note describes receiving interrogatories, a request for production, or a request for admissions, this is always 'marcp' -- those three discovery devices are part of the Rules of Civil Procedure themselves, not a rival rule set, and apply the same way no matter which court the case is in (get documentServed right instead, since that's what the app reads to tell the three apart). Otherwise, for a motion/opposition-style filing deadline, map to exactly one of the four known jurisdiction sets (masuperior/malandct/maappellate/marcp) -- pick the closest match; use 'marcp' as the fallback when a MA trial-court civil filing is described but no more specific court is named.
 - serviceDate, documentServed, and caseNumber come ONLY from what the note actually states -- leave them null/empty rather than guessing, even though this event still needs a "date" field filled in per the rules above (that top-level date field can default to the service date if one is known, or fall back to the same today-default as any other event; a human will confirm the real deadline in the app before anything is computed, so getting this particular field slightly wrong here is low-stakes).
 - documentServed matters beyond bookkeeping: for a MA Superior Court deadline, whether it names a summary-judgment motion specifically (vs. an ordinary motion) changes which day count the app computes under -- so extract it whenever the note says what was served, even loosely (e.g. "they moved for summary judgment"); for a discovery request, extract it the same way so the calendar description and rule-set dropdown both read correctly (e.g. "Interrogatories", "Request for Production", "Requests for Admission").
 - allDay should be true and startTime/endTime left empty for a court deadline event -- it's a due-by date, not a scheduled meeting.
@@ -299,13 +285,17 @@ function normalizeEvent(raw: Record<string, unknown>, nowLocal: string): ParsedE
   const courtDetected =
     typeof raw.courtDetected === "string" && raw.courtDetected.trim() ? raw.courtDetected.trim() : null;
 
-  // Start from what the model itself said, then let resolveDiscoveryRuleSet
-  // deterministically overrule it whenever courtDetected/documentServed
-  // together contain an unambiguous discovery-type keyword -- see that
-  // function's doc comment for why this exists: the model can let
-  // suggestedRuleSet/documentServed disagree with its own courtDetected
-  // text within a single response, and this is what catches it before it
-  // ever reaches the card.
+  // Start from what the model itself said, then let
+  // resolveDiscoveryDocumentLabel deterministically overrule it whenever
+  // courtDetected/documentServed together contain an unambiguous
+  // discovery-type keyword -- see that function's doc comment for why
+  // this exists: the model can let suggestedRuleSet/documentServed
+  // disagree with its own courtDetected text within a single response,
+  // and this is what catches it before it ever reaches the card. A
+  // discovery request always resolves to "marcp" -- see the
+  // RuleSetKey/DiscoveryType note in types/event.ts -- with the specific
+  // 30/45-day period picked up later from documentServed by the app's own
+  // detectDiscoveryType (lib/courtRules.ts), not from this field.
   let resolvedRuleSet: RuleSetKey | null =
     typeof raw.suggestedRuleSet === "string" && RULE_SET_KEYS.includes(raw.suggestedRuleSet as RuleSetKey)
       ? (raw.suggestedRuleSet as RuleSetKey)
@@ -313,14 +303,14 @@ function normalizeEvent(raw: Record<string, unknown>, nowLocal: string): ParsedE
   let resolvedDocumentServed = typeof raw.documentServed === "string" ? raw.documentServed.trim() : "";
 
   if (courtDetected) {
-    const discoveryMatch = resolveDiscoveryRuleSet(`${courtDetected} ${resolvedDocumentServed}`);
-    if (discoveryMatch) {
-      resolvedRuleSet = discoveryMatch.ruleSet;
+    const discoveryLabel = resolveDiscoveryDocumentLabel(`${courtDetected} ${resolvedDocumentServed}`);
+    if (discoveryLabel) {
+      resolvedRuleSet = "marcp";
       // Only overwrite documentServed if it doesn't already name the same
       // discovery type -- a more specific model-written value (e.g. "Second
       // Set of Interrogatories") is worth keeping over the generic label.
-      if (!resolveDiscoveryRuleSet(resolvedDocumentServed)) {
-        resolvedDocumentServed = discoveryMatch.label;
+      if (!resolveDiscoveryDocumentLabel(resolvedDocumentServed)) {
+        resolvedDocumentServed = discoveryLabel;
       }
     }
   }
