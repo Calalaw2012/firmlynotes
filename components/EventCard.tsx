@@ -651,7 +651,15 @@ function PendingRuleSetPicker({
 }) {
   const selected = cr.ruleSet;
   const isSuggested = selected != null && selected === cr.suggestedRuleSet;
-  const link = selected ? RULE_LINKS[selected] : null;
+  const isSJ = courtRulesIsSummaryJudgment(cr);
+  const discoveryType = courtRulesDiscoveryType(cr);
+  const link = selected
+    ? isSJ
+      ? SUPERIOR_SUMMARY_JUDGMENT_LINK
+      : discoveryType
+        ? DISCOVERY_LINKS[discoveryType]
+        : RULE_LINKS[selected]
+    : null;
 
   return (
     <div className="space-y-2.5 rounded-lg border border-indigo-border/50 bg-bg-sunken p-3.5">
