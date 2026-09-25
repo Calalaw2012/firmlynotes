@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { Attendee, CourtRulesInfo, DiscoveryType, ParsedEvent, Reminder, RuleSetKey } from "@/types/event";
 import {
   RULE_SET_LABELS,
@@ -79,46 +79,36 @@ const HOUR_OPTIONS = Array.from({ length: 12 }, (_, i) => i + 1);
 const MINUTE_OPTIONS = Array.from({ length: 60 }, (_, i) => i);
 
 /**
- * Three plain <select> elements instead of a native <input type="time">.
- * A native time input's wheel picker -- and its "Reset" control -- renders
- * in the device's own OS-level system language no matter what this page
- * says, e.g. "Ripristina" on an Italian-locale iPhone. A <select>'s native
- * picker only ever shows the option text this component gives it, so it
- * stays in plain English regardless of the device's language setting.
+ * Calendar-grid date picker and a duration-chip + scrollable-list time
+ * picker, per the approved mockup -- replacing the old <select>-based
+ * dropdowns. Both stay off native <input type="date"/"time"> for the same
+ * reason the old selects were: a native picker renders in the device's OS
+ * language regardless of what this page says. Both open as a small
+ * anchored popover on desktop and a full-width bottom sheet on phone
+ * widths (Tailwind's sm: breakpoint), driven by CSS alone -- same
+ * component, same state, no device detection.
  */
-function TimeSelect({
-  value,
-  onChange,
-  autoFocus,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  autoFocus?: boolean;
-}) {
-  const { h12, m, ampm } = timeStringToParts(value);
-  return (
-    <div className="mt-1 flex items-center gap-1.5">
-      <select autoFocus={autoFocus} className={`${inputClasses} w-[58px] shrink-0`} value={h12} onChange={(e) => onChange(partsToTimeString(Number(e.target.value), m, ampm))}>
-        {HOUR_OPTIONS.map((h) => (
-          <option key={h} value={h}>
-            {h}
-          </option>
-        ))}
-      </select>
-      <select className={`${inputClasses} w-[58px] shrink-0`} value={m} onChange={(e) => onChange(partsToTimeString(h12, Number(e.target.value), ampm))}>
-        {MINUTE_OPTIONS.map((min) => (
-          <option key={min} value={min}>
-            {String(min).padStart(2, "0")}
-          </option>
-        ))}
-      </select>
-      <select className={`${inputClasses} w-[64px] shrink-0`} value={ampm} onChange={(e) => onChange(partsToTimeString(h12, m, e.target.value as "AM" | "PM"))}>
-        <option value="AM">AM</option>
-        <option value="PM">PM</option>
-      </select>
-    </div>
-  );
+
+function timeToMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
 }
+
+function minutesToTime(totalMinutes: number): string {
+  const wrapped = ((totalMinutes % (24 * 60)) + 24 * 60) % (24 * 60);
+  const h = Math.floor(wrapped / 60);
+  const m = wrapped % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+const TIME_OPTIONS: string[] = Array.from({ length: 96 }, (_, i) => minutesToTime(i * 15));
+
+const DURATION_CHIPS: { label: string; minutes: number }[] = [
+  { label: "30m", minutes: 30 },
+  { label: "1h", minutes: 60 },
+  { label: "1.5h", minutes: 90 },
+  { label: "2h", minutes: 120 },
+];
 
 function TimeField({
   event,
@@ -133,16 +123,10 @@ function TimeField({
   const [draftAllDay, setDraftAllDay] = useState(event.allDay);
   const [draftStart, setDraftStart] = useState(event.startTime ?? "09:00");
   const [draftEnd, setDraftEnd] = useState(event.endTime ?? "10:00");
+  const startListRef = useRef<HTMLDivElement>(null);
+  const endListRef = useRef<HTMLDivElement>(null);
 
-  function openEditor() {
-    if (disabled) return;
-    setDraftAllDay(event.allDay);
-    setDraftStart(event.startTime ?? "09:00");
-    setDraftEnd(event.endTime ?? "10:00");
-    setEditing(true);
-  }
-
-  function commit() {
+  function commitAndClose() {
     setEditing(false);
     if (draftAllDay) {
       onChange({ allDay: true, startTime: null, endTime: null });
@@ -151,6 +135,37 @@ function TimeField({
     }
   }
 
+  function toggle() {
+    if (disabled) return;
+    if (editing) {
+      commitAndClose();
+      return;
+    }
+    setDraftAllDay(event.allDay);
+    setDraftStart(event.startTime ?? "09:00");
+    setDraftEnd(event.endTime ?? "10:00");
+    setEditing(true);
+  }
+
+  function pickStart(value: string) {
+    setDraftStart(value);
+    if (draftEnd <= value) setDraftEnd(minutesToTime(timeToMinutes(value) + 60));
+  }
+
+  useEffect(() => {
+    if (!editing) return;
+    const raf = requestAnimationFrame(() => {
+      const startEl = startListRef.current;
+      const startTarget = startEl?.querySelector<HTMLElement>(`[data-value="${draftStart}"]`);
+      if (startEl && startTarget) startEl.scrollTop = startTarget.offsetTop - startEl.clientHeight / 2 + startTarget.offsetHeight / 2;
+      const endEl = endListRef.current;
+      const endTarget = endEl?.querySelector<HTMLElement>(`[data-value="${draftEnd}"]`);
+      if (endEl && endTarget) endEl.scrollTop = endTarget.offsetTop - endEl.clientHeight / 2 + endTarget.offsetHeight / 2;
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing]);
+
   const displayText = event.allDay
     ? "All day"
     : event.startTime && event.endTime
@@ -158,74 +173,71 @@ function TimeField({
     : null;
 
   const durationCaption =
-    !event.allDay && event.startTime && event.endTime
-      ? formatDuration(minutesBetween(event.startTime, event.endTime))
-      : "";
+    !event.allDay && event.startTime && event.endTime ? formatDuration(minutesBetween(event.startTime, event.endTime)) : "";
 
-  if (!editing) {
-    return (
-      <div>
-        <button type="button" onClick={openEditor} disabled={disabled} className={`${inputClasses} truncate text-left`}>
-          {displayText ?? <span className="text-ink-faint">Choose time…</span>}
-        </button>
-        {durationCaption && <p className="mt-1 px-1 text-xs text-ink-faint">{durationCaption}</p>}
-      </div>
-    );
-  }
+  const draftDuration = minutesBetween(draftStart, draftEnd);
 
   return (
-    <div
-      className="space-y-2 rounded-lg border border-indigo-border bg-bg-sunken p-2.5"
-      onBlur={(e) => {
-        // Commit only once focus actually leaves this whole editor block,
-        // not on every individual input blurring to the next one inside it.
-        if (!e.currentTarget.contains(e.relatedTarget as Node)) commit();
-      }}
-    >
-      <label className="flex items-center gap-2 text-xs text-ink-muted">
-        <input
-          type="checkbox"
-          className="h-3.5 w-3.5 rounded border-border bg-bg-sunken accent-indigo-solid"
-          checked={draftAllDay}
-          onChange={(e) => setDraftAllDay(e.target.checked)}
-        />
-        All day
-      </label>
-      {!draftAllDay && (
-        // Two custom <select>-based time pickers, not native <input
-        // type="time"> boxes -- see the TimeSelect comment above for why.
-        <div className="space-y-2">
-          <label className="block text-[10px] uppercase tracking-wide text-ink-faint">
-            Start
-            <TimeSelect value={draftStart} onChange={setDraftStart} autoFocus />
-          </label>
-          <label className="block text-[10px] uppercase tracking-wide text-ink-faint">
-            End
-            <TimeSelect value={draftEnd} onChange={setDraftEnd} />
-          </label>
-        </div>
-      )}
-      <button
-        type="button"
-        onClick={commit}
-        className="text-xs font-medium text-indigo-text hover:underline"
-      >
-        Done
-      </button>
+    <div>
+      <div className="relative" onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) commitAndClose(); }}>
+        <button type="button" onClick={toggle} disabled={disabled} className={`${inputClasses} truncate text-left ${editing ? "border-indigo-border" : ""}`}>
+          {editing ? (draftAllDay ? "All day" : `${formatTimeDisplay(draftStart)} – ${formatTimeDisplay(draftEnd)}`) : displayText ?? <span className="text-ink-faint">Choose time…</span>}
+        </button>
+        {editing && (
+          <>
+            <div className="fixed inset-0 z-20 bg-black/50 sm:hidden" onClick={commitAndClose} />
+            <div className="fixed inset-x-0 bottom-0 z-30 flex max-h-[80vh] flex-col rounded-t-2xl border-t border-indigo-border/55 bg-bg-elevated p-3 shadow-2xl sm:absolute sm:inset-auto sm:left-0 sm:top-full sm:mt-1.5 sm:max-h-none sm:w-[300px] sm:rounded-lg sm:border sm:border-indigo-border/55 sm:p-3 sm:shadow-xl">
+              <div className="mb-2 flex items-center justify-between sm:hidden">
+                <span className="text-sm font-semibold text-ink">Select time</span>
+                <button type="button" onClick={commitAndClose} className="flex h-6 w-6 items-center justify-center rounded-full border border-border bg-bg-sunken text-ink-muted">×</button>
+              </div>
+              <label className="mb-2.5 flex items-center gap-2 text-xs text-ink-muted">
+                <input type="checkbox" className="h-3.5 w-3.5 rounded border-border bg-bg-sunken accent-indigo-solid" checked={draftAllDay} onChange={(e) => setDraftAllDay(e.target.checked)} />
+                All day
+              </label>
+              {!draftAllDay && (
+                <>
+                  <div className="mb-2.5 flex gap-1.5">
+                    {DURATION_CHIPS.map((chip) => (
+                      <button key={chip.label} type="button" onClick={() => setDraftEnd(minutesToTime(timeToMinutes(draftStart) + chip.minutes))} className={`flex-1 rounded-md border px-1 py-1.5 text-[11px] font-semibold ${draftDuration === chip.minutes ? "border-indigo-border bg-indigo-bg text-indigo-text" : "border-border bg-bg-sunken text-ink-muted hover:text-ink"}`}>{chip.label}</button>
+                    ))}
+                  </div>
+                  <div className="grid flex-1 grid-cols-2 gap-2 overflow-hidden">
+                    <div className="flex flex-col overflow-hidden">
+                      <span className="mb-1 pl-0.5 text-[10px] font-bold uppercase tracking-wide text-ink-faint">Start</span>
+                      <div ref={startListRef} className="flex-1 overflow-y-auto rounded-md border border-border bg-bg-sunken">
+                        {TIME_OPTIONS.map((opt) => (
+                          <button key={opt} data-value={opt} type="button" onClick={() => pickStart(opt)} className={`block w-full px-2.5 py-1.5 text-left text-[12.5px] tabular-nums ${opt === draftStart ? "bg-indigo-bg font-bold text-indigo-text" : "text-ink-muted hover:bg-bg-elevated hover:text-ink"}`}>{formatTimeDisplay(opt)}</button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex flex-col overflow-hidden">
+                      <span className="mb-1 pl-0.5 text-[10px] font-bold uppercase tracking-wide text-ink-faint">End</span>
+                      <div ref={endListRef} className="flex-1 overflow-y-auto rounded-md border border-border bg-bg-sunken">
+                        {TIME_OPTIONS.map((opt) => (
+                          <button key={opt} data-value={opt} type="button" onClick={() => setDraftEnd(opt)} className={`block w-full px-2.5 py-1.5 text-left text-[12.5px] tabular-nums ${opt === draftEnd ? "bg-indigo-bg font-bold text-indigo-text" : "text-ink-muted hover:bg-bg-elevated hover:text-ink"}`}>{formatTimeDisplay(opt)}</button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+              <div className="mt-2.5 flex items-center justify-between border-t border-border-faint pt-2.5">
+                <span className="text-[11px] text-ink-faint">{draftAllDay ? "All day" : formatDuration(draftDuration)}</span>
+                <button type="button" onClick={commitAndClose} className="text-xs font-medium text-indigo-text hover:underline">Done</button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+      {!editing && durationCaption && <p className="mt-1 px-1 text-xs text-ink-faint">{durationCaption}</p>}
     </div>
   );
 }
 
 /**
  * "Sep 24, 2026" -- explicitly en-US and UTC, so this reads the same on
- * every device regardless of the phone/browser's own system language. A
- * bare <input type="date"> shows its native OS date-picker text (both the
- * resting value and the wheel popup) in whatever language the device is
- * set to -- e.g. "24 set 2026" on an Italian-locale iPhone -- which reads
- * as broken next to the rest of this English UI. There's no way to force
- * the native picker's own popup language (that's the OS/browser's call),
- * but the resting display text is ours to control, exactly like TimeField
- * already formats its own display instead of showing the raw input.
+ * every device regardless of the phone/browser's own system language.
  */
 function formatDateDisplay(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
@@ -251,71 +263,92 @@ function DateField({
   onChange: (value: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
+  const [viewYear, setViewYear] = useState(0);
+  const [viewMonth, setViewMonth] = useState(0);
 
-  function openEditor() {
+  function toggle() {
     if (disabled) return;
-    setDraft(value || formatISODate(new Date()));
+    if (editing) {
+      setEditing(false);
+      return;
+    }
+    const base = value ? parseISODate(value) : new Date();
+    setViewYear(base.getUTCFullYear());
+    setViewMonth(base.getUTCMonth());
     setEditing(true);
   }
 
-  function commit() {
+  function pick(iso: string) {
+    if (min && iso < min) return;
+    onChange(iso);
     setEditing(false);
-    if (draft) onChange(draft);
   }
 
-  if (!editing) {
-    return (
-      <button
-        type="button"
-        onClick={openEditor}
-        disabled={disabled}
-        lang="en-US"
-        className={`${inputClasses} truncate text-left`}
-      >
-        {value ? formatDateDisplay(value) : <span className="text-ink-faint">Choose date…</span>}
-      </button>
-    );
+  function shiftMonth(delta: number) {
+    let y = viewYear;
+    let m = viewMonth + delta;
+    if (m < 0) { m = 11; y -= 1; }
+    if (m > 11) { m = 0; y += 1; }
+    setViewYear(y);
+    setViewMonth(m);
   }
 
-  const [dy, dm, dd] = draft.split("-").map(Number);
-  const daysInMonth = new Date(Date.UTC(dy, dm, 0)).getUTCDate();
-  const thisYear = new Date().getUTCFullYear();
-  const yearOptions = Array.from({ length: 8 }, (_, i) => thisYear - 1 + i);
-
-  function setDate(nextY: number, nextM: number, nextD: number) {
-    const maxDay = new Date(Date.UTC(nextY, nextM, 0)).getUTCDate();
-    const clampedD = Math.min(nextD, maxDay);
-    const next = `${nextY}-${String(nextM).padStart(2, "0")}-${String(clampedD).padStart(2, "0")}`;
-    setDraft(min && next < min ? min : next);
+  const cells: { iso: string; day: number; inMonth: boolean }[] = [];
+  if (editing) {
+    const first = new Date(Date.UTC(viewYear, viewMonth, 1));
+    const startDow = first.getUTCDay();
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(Date.UTC(viewYear, viewMonth, 1 - startDow + i));
+      cells.push({ iso: formatISODate(d), day: d.getUTCDate(), inMonth: d.getUTCMonth() === viewMonth });
+    }
   }
+  const todayIso = formatISODate(new Date());
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-indigo-border bg-bg-sunken p-2" onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) commit(); }}>
-      <select autoFocus className={`${inputClasses} w-[108px]`} value={dm} onChange={(e) => setDate(dy, Number(e.target.value), dd)}>
-        {MONTH_NAMES.map((name, i) => (
-          <option key={name} value={i + 1}>
-            {name}
-          </option>
-        ))}
-      </select>
-      <select className={`${inputClasses} w-[68px]`} value={dd} onChange={(e) => setDate(dy, dm, Number(e.target.value))}>
-        {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => (
-          <option key={day} value={day}>
-            {day}
-          </option>
-        ))}
-      </select>
-      <select className={`${inputClasses} w-[84px]`} value={dy} onChange={(e) => setDate(Number(e.target.value), dm, dd)}>
-        {yearOptions.map((yr) => (
-          <option key={yr} value={yr}>
-            {yr}
-          </option>
-        ))}
-      </select>
-      <button type="button" onClick={commit} className="text-xs font-medium text-indigo-text hover:underline">
-        Done
+    <div className="relative" onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setEditing(false); }}>
+      <button type="button" onClick={toggle} disabled={disabled} lang="en-US" className={`${inputClasses} truncate text-left ${editing ? "border-indigo-border" : ""}`}>
+        {value ? formatDateDisplay(value) : <span className="text-ink-faint">Choose date…</span>}
       </button>
+      {editing && (
+        <>
+          <div className="fixed inset-0 z-20 bg-black/50 sm:hidden" onClick={() => setEditing(false)} />
+          <div className="fixed inset-x-0 bottom-0 z-30 rounded-t-2xl border-t border-indigo-border/55 bg-bg-elevated p-3 shadow-2xl sm:absolute sm:inset-auto sm:left-0 sm:top-full sm:mt-1.5 sm:w-[280px] sm:rounded-lg sm:border sm:border-indigo-border/55 sm:p-3 sm:shadow-xl">
+            <div className="mb-2 flex items-center justify-between sm:hidden">
+              <span className="text-sm font-semibold text-ink">Select date</span>
+              <button type="button" onClick={() => setEditing(false)} className="flex h-6 w-6 items-center justify-center rounded-full border border-border bg-bg-sunken text-ink-muted">×</button>
+            </div>
+            <div className="mb-2.5 flex items-center justify-between">
+              <span className="text-[13px] font-semibold text-ink">{MONTH_NAMES[viewMonth]} {viewYear}</span>
+              <div className="flex gap-1">
+                <button type="button" onClick={() => shiftMonth(-1)} className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-bg-sunken text-ink-muted hover:border-indigo-border hover:text-ink">‹</button>
+                <button type="button" onClick={() => shiftMonth(1)} className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-bg-sunken text-ink-muted hover:border-indigo-border hover:text-ink">›</button>
+              </div>
+            </div>
+            <div className="grid grid-cols-7 gap-[2px]">
+              {DOW_LABELS.map((d, i) => (
+                <span key={i} className="pb-1 text-center text-[10px] font-bold uppercase text-ink-faint">{d}</span>
+              ))}
+              {cells.map((cell) => {
+                const isSelected = cell.iso === value;
+                const isToday = cell.iso === todayIso;
+                const isDisabled = Boolean(min && cell.iso < min);
+                const cls = isSelected
+                  ? "bg-indigo-solid font-bold text-white"
+                  : isDisabled
+                  ? "cursor-not-allowed text-ink-faint/40"
+                  : isToday
+                  ? "border border-indigo-border/60 font-bold text-ink hover:bg-bg-sunken"
+                  : cell.inMonth
+                  ? "text-ink hover:bg-bg-sunken"
+                  : "text-ink-faint/50 hover:bg-bg-sunken";
+                return (
+                  <button key={cell.iso} type="button" disabled={isDisabled} onClick={() => pick(cell.iso)} className={`aspect-square rounded-md text-[12.5px] ${cls}`}>{cell.day}</button>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
