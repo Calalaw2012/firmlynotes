@@ -215,6 +215,7 @@ export default function NoteComposer({
   onClear,
   parsing,
   countdown,
+  userName,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -223,6 +224,8 @@ export default function NoteComposer({
   parsing: boolean;
   /** Seconds left before the debounced auto-parse fires, or null when idle. */
   countdown: number | null;
+  /** The signed-in user's display name, used to name the downloaded Word doc. */
+  userName: string;
 }) {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -233,7 +236,7 @@ export default function NoteComposer({
     setNotice(null);
     setSaving(true);
     try {
-      const result = await saveNoteAsWordDoc(value);
+      const result = await saveNoteAsWordDoc(value, userName);
       setNotice(result.saved ? `Saved "${result.filename}".` : null);
     } catch {
       setNotice("Couldn't save that as a Word document.");
