@@ -20,8 +20,9 @@ export async function saveNoteAsWordDoc(
   text: string,
   userName: string
 ): Promise<{ saved: boolean; filename: string }> {
-  const filename = deriveFilename(userName);
-  const blob = await buildDocxBlob(text, filename);
+  const displayName = deriveDisplayName(userName);
+  const filename = toSafeFilename(displayName);
+  const blob = await buildDocxBlob(text, displayName);
 
   const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker })
     .showSaveFilePicker;
@@ -59,14 +60,27 @@ export async function saveNoteAsWordDoc(
 }
 
 /**
- * "Notes - Peter Calabrese, 09.25.2026, 5:38 p.m..docx" -- the signed-in
- * user's display name plus the date and time of the download itself, not
- * anything derived from the note's own text.
+ * "Notes - Peter Calabrese, 09.25.2026, 5:38 p.m." -- the signed-in user's
+ * display name plus the date and time of the download itself, not
+ * anything derived from the note's own text. This is what's shown in the
+ * document header -- it can safely contain a colon since it's just text
+ * inside the file, not a filesystem name.
  */
-function deriveFilename(userName: string): string {
+function deriveDisplayName(userName: string): string {
   const safeName = userName.trim().replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim() || "Notes";
   const now = new Date();
-  return `Notes - ${safeName}, ${formatDownloadDate(now)}, ${formatDownloadTime(now)}.docx`;
+  return `Notes - ${safeName}, ${formatDownloadDate(now)}, ${formatDownloadTime(now)}`;
+}
+
+/**
+ * The actual file name written to disk. Colons are invalid in Windows
+ * filenames -- browsers/OSes silently mangle them into underscores (e.g.
+ * "6:07 p.m." becomes "6_07 p.m."), so the time's colon is swapped for a
+ * period here to keep the saved filename clean and matching the
+ * in-document header at a glance.
+ */
+function toSafeFilename(displayName: string): string {
+  return `${displayName.replace(":", ".")}.docx`;
 }
 
 function formatDownloadDate(d: Date): string {
@@ -88,16 +102,11 @@ function formatDownloadTime(d: Date): string {
 const HEADER_FOOTER_COLOR = "595959";
 const HEADER_FOOTER_SIZE = 18; // half-points -- 9pt
 
-async function buildDocxBlob(text: string, filename: string): Promise<Blob> {
+async function buildDocxBlob(text: string, displayName: string): Promise<Blob> {
   const lines = text.split("\n");
   const paragraphs = (lines.length ? lines : [""]).map(
     (line) => new Paragraph({ children: [new TextRun(line)] })
   );
-
-  // The header/footer repeat the same name the user sees in the save
-  // dialog, minus the .docx extension -- so a printed or emailed copy is
-  // still identifiable once it's out of the file system.
-  const displayName = filename.replace(/\.docx$/i, "");
 
   const doc = new Document({
     sections: [
