@@ -20,6 +20,16 @@ export const RULE_SET_LABELS: Record<RuleSetKey, string> = {
   maappellate: "MA Rules of Appellate Procedure",
 };
 
+/**
+ * Each rule set's *motion*-practice citation -- Land Court Rule 4,
+ * Superior Court Rule 9A(b)(4), Appellate Procedure Rule 15(a), and (for
+ * marcp) Rule 12(b)(6). These are shown, and their KNOWN_OPPOSITION_DAYS
+ * day count applied, ONLY when isMotion(documentServed) says the filing
+ * actually is a motion -- see isMotion below. A Complaint (isInitialPleading)
+ * or a discovery device (detectDiscoveryType) has its own citation instead
+ * (ANSWER_LINK / DISCOVERY_LINKS), and anything that's none of the three
+ * shows no rule citation at all rather than defaulting to one of these.
+ */
 export const RULE_LINKS: Record<RuleSetKey, { label: string; url: string }> = {
   marcp: {
     label: "Mass. R. Civ. P. 12(b)(6) — Motion to Dismiss",
@@ -85,14 +95,18 @@ export const RULE_6_LINK = {
 };
 
 /**
- * The response period for each rule set, in days after service, researched
- * and verified against mass.gov. For the four jurisdiction rule sets this
- * is the general-motion *opposition* period; "marcp" is deliberately
- * absent there: Rule 12(b)(6) itself sets no opposition deadline -- that's
- * always set by whichever court's local rules actually apply (9A, Land
- * Court Rule 4, etc.), so there is no single day count to show for it. See
- * the "marcp" branch of ConfirmedCascade in components/EventCard.tsx for
- * how that structural non-case is surfaced to the user.
+ * The general-motion *opposition* period for each rule set, in days after
+ * service, researched and verified against mass.gov. "marcp" is
+ * deliberately absent: Rule 12(b)(6) itself sets no opposition deadline --
+ * that's always set by whichever court's local rules actually apply (9A,
+ * Land Court Rule 4, etc.).
+ *
+ * Consulted by computeDeadline ONLY when isMotion(documentServed) is true
+ * -- i.e. the filing actually names or otherwise concerns a motion. A
+ * Complaint, a discovery request, or anything else that doesn't mention a
+ * motion never falls back to this table or to RULE_LINKS' motion
+ * citations; see isMotion below and the isMotionFlag parameter of
+ * computeDeadline.
  *
  * masuperior here is specifically Rule 9A(b)(4)'s *general*-motion track.
  * A summary-judgment motion runs the longer, 21-day track under Rule
@@ -101,9 +115,18 @@ export const RULE_6_LINK = {
  * the two whenever ruleSet is "masuperior". A discovery response
  * (interrogatories/production/admissions) is handled the same way one
  * level down, under "marcp" -- see KNOWN_DISCOVERY_DAYS and
- * detectDiscoveryType below. An initiating pleading requiring an Answer
- * (Complaint/Counterclaim/Cross-Claim) is handled the same way again --
- * see ANSWER_DAYS and isInitialPleading below.
+ * detectDiscoveryType below.
+ *
+ * An initiating pleading requiring an Answer (Complaint/Counterclaim/
+ * Cross-Claim) is handled differently from all of the above -- see
+ * ANSWER_DAYS and isInitialPleading below. Rule 12(a)(1)'s 20-day Answer
+ * period is a fixed statewide rule of civil procedure, not a local
+ * court's own motion-practice rule, so it is NOT scoped to
+ * ruleSet === "marcp" and takes priority over this table: computeDeadline
+ * applies it whenever isInitialPleading matches, regardless of which of
+ * these four rule sets is selected -- a Complaint is a Complaint whether
+ * the case is in Land Court, Superior Court, or elsewhere, and Rule
+ * 12(a)(1) governs the Answer to it either way.
  */
 export const KNOWN_OPPOSITION_DAYS: Partial<Record<RuleSetKey, number>> = {
   masuperior: 10,
@@ -138,8 +161,8 @@ export const KNOWN_DISCOVERY_DAYS: Record<DiscoveryType, number> = {
  * True when documentServed names a discovery device with its own fixed
  * response period under the Rules of Civil Procedure, by simple,
  * deliberately narrow keyword matching -- the same approach
- * isSummaryJudgmentMotion below uses for a summary-judgment motion. Only
- * meaningful when ruleSet is "marcp"; see courtRulesDiscoveryType in
+ * isSummaryJudgmentMotion/isMotion below use. Only meaningful when
+ * ruleSet is "marcp"; see courtRulesDiscoveryType in
  * components/EventCard.tsx and app/page.tsx's recomputeCourtRules, both of
  * which gate on that before calling this.
  */
@@ -158,10 +181,12 @@ export function detectDiscoveryType(documentServed: string): DiscoveryType | nul
  * Cross-Claim -- must serve its Answer within 20 days, fixed statewide,
  * regardless of which court the case is in. Structurally the same kind of
  * fixed statewide period as a discovery device's (see
- * KNOWN_DISCOVERY_DAYS/detectDiscoveryType above), and confirmed under
- * "marcp" the same way -- not the local-court-rule-dependent motion
- * opposition period Rule 12(b)(6) itself has none of. Verified against the
- * current text of Rule 12(a)(1) on mass.gov.
+ * KNOWN_DISCOVERY_DAYS/detectDiscoveryType above), but unlike the
+ * discovery devices this one is NOT scoped to ruleSet === "marcp" -- an
+ * Answer to a Complaint runs on this same 20-day statewide clock whether
+ * the case is in Land Court, Superior Court, or governed by any other
+ * rule set in RuleSetKey, so computeDeadline applies it across all of
+ * them. Verified against the current text of Rule 12(a)(1) on mass.gov.
  */
 export const ANSWER_DAYS = 20;
 
@@ -175,12 +200,15 @@ export const ANSWER_LINK = {
  * responsive pleading (an Answer) under Rule 12(a)(1) -- a Complaint,
  * Amended Complaint, Counterclaim, or Cross-Claim -- rather than a motion,
  * by the same simple, deliberately narrow keyword matching as
- * detectDiscoveryType/isSummaryJudgmentMotion above. Excludes anything
- * that also mentions "motion" so a filing like "Motion to Dismiss
- * Complaint" -- which is a motion, not the complaint itself triggering an
- * answer -- never collides with the MTD/9A/Land-Court-Rule-4 opposition
- * track. Only meaningful when ruleSet is "marcp"; see
- * courtRulesIsInitialPleading in components/EventCard.tsx.
+ * detectDiscoveryType/isSummaryJudgmentMotion/isMotion above and below.
+ * Excludes anything that also mentions "motion" so a filing like "Motion
+ * to Dismiss Complaint" -- which is a motion, not the complaint itself
+ * triggering an answer -- never collides with the motion-opposition
+ * track. Applies regardless of which rule set is selected -- Rule
+ * 12(a)(1)'s 20-day Answer period doesn't depend on which court the case
+ * is in, so this is deliberately NOT gated on ruleSet === "marcp"; see
+ * courtRulesIsInitialPleading in components/EventCard.tsx, which likewise
+ * applies across every rule set.
  */
 export function isInitialPleading(documentServed: string): boolean {
   if (/motion/i.test(documentServed)) return false;
@@ -203,10 +231,34 @@ export const SUPERIOR_SUMMARY_JUDGMENT_DAYS = 21;
  * general 10-day opposition period to Rule 9A(b)(1)'s 21-day one --
  * nothing else in the extraction schema reliably distinguishes the two,
  * so this reads the same field the confirmed-state card now shows a live
- * description preview for (see buildCourtDeadlineDescription below).
+ * description preview for (see buildCourtDeadlineDescription below). A
+ * summary-judgment motion also always satisfies isMotion below, so this
+ * flag is checked ahead of isMotion in computeDeadline/EventCard.tsx --
+ * it picks the specific 21-day track instead of falling through to the
+ * generic motion-opposition day count.
  */
 export function isSummaryJudgmentMotion(documentServed: string): boolean {
   return /summary\s*judgment/i.test(documentServed);
+}
+
+/**
+ * True when documentServed names or otherwise concerns a motion, by the
+ * same simple, deliberately narrow keyword matching used throughout this
+ * module. This is what gates the generic motion-opposition day count in
+ * KNOWN_OPPOSITION_DAYS and each rule set's motion citation in RULE_LINKS
+ * -- they're shown ONLY when the filing actually looks like a motion, not
+ * as a silent default for every filing regardless of what it actually is.
+ * A filing that's an initiating pleading (isInitialPleading) or a
+ * discovery device (detectDiscoveryType) has its own citation and day
+ * count instead and never reaches this check in practice (the two sets of
+ * keywords are mutually exclusive by construction); anything that's none
+ * of motion, initiating pleading, or discovery device shows no rule
+ * citation and no computed deadline at all, rather than defaulting to a
+ * motion rule that may not apply. See courtRulesIsMotion in
+ * components/EventCard.tsx.
+ */
+export function isMotion(documentServed: string): boolean {
+  return /motion/i.test(documentServed);
 }
 
 // -- Massachusetts legal holidays, any year -----------------------------
@@ -360,29 +412,41 @@ export function computeRule6Result(serviceDate: Date, prescribedDays: number): R
 /**
  * Full computation for a rule set + service date, applying Rule 6(d)'s +3
  * days for mail/email/EFSP service before running the Rule 6(a) count.
- * Returns null when neither a known day count nor a recognized discovery
- * type / initiating pleading applies, or the service date is missing --
- * callers should show the manual-entry / no-deadline-of-its-own
- * explanation in that case instead.
+ * Returns null when none of the flags below applies (and no known motion
+ * day count applies either), or the service date is missing -- callers
+ * should show the manual-entry / no-deadline-of-its-own explanation in
+ * that case instead.
  *
- * isSummaryJudgment (default false) only matters when ruleSet is
- * "masuperior": true switches the base day count from Rule 9A(b)(4)'s
- * general 10 days to Rule 9A(b)(1)'s 21 days for a summary-judgment
- * motion. Callers pass isSummaryJudgmentMotion(cr.documentServed).
+ * The four flags are checked in this priority order, and each is
+ * mutually exclusive with the others by construction (the keyword
+ * matching behind them never double-matches the same text):
  *
- * discoveryType (default null) only matters when ruleSet is "marcp": when
- * set, it switches the base day count to that discovery device's own
- * fixed response period (KNOWN_DISCOVERY_DAYS) instead of marcp's usual
- * "no deadline of its own" null result. Callers pass
- * detectDiscoveryType(cr.documentServed) -- see courtRulesDiscoveryType in
- * components/EventCard.tsx.
+ * 1. isInitialPleadingFlag (default false) -- Rule 12(a)(1)'s fixed
+ *    20-day Answer period (ANSWER_DAYS). Applies regardless of ruleSet: a
+ *    Complaint/Counterclaim/Cross-Claim runs on the same fixed statewide
+ *    clock no matter which court the case is in. Callers pass
+ *    isInitialPleading(cr.documentServed).
+ * 2. isSummaryJudgment (default false) -- only matters when ruleSet is
+ *    "masuperior": Rule 9A(b)(1)'s 21-day summary-judgment track instead
+ *    of 9A(b)(4)'s general 10-day one. Callers pass
+ *    isSummaryJudgmentMotion(cr.documentServed).
+ * 3. discoveryType (default null) -- only matters when ruleSet is
+ *    "marcp": that discovery device's own fixed response period
+ *    (KNOWN_DISCOVERY_DAYS). Callers pass
+ *    detectDiscoveryType(cr.documentServed).
+ * 4. isMotionFlag (default false) -- the generic motion-opposition day
+ *    count for whichever rule set is selected (KNOWN_OPPOSITION_DAYS),
+ *    used ONLY when the filing actually looks like a motion. Without
+ *    this flag, a rule set with an entry in KNOWN_OPPOSITION_DAYS
+ *    (malandct, masuperior, maappellate) no longer defaults to that
+ *    motion day count for every filing regardless of content -- only for
+ *    one isMotion(cr.documentServed) actually matches. Callers pass
+ *    isMotion(cr.documentServed).
  *
- * isInitialPleadingFlag (default false) only matters when ruleSet is
- * "marcp" and discoveryType is null: when true, it switches the base day
- * count to Rule 12(a)(1)'s fixed 20-day Answer period (ANSWER_DAYS)
- * instead of marcp's usual "no deadline of its own" null result. Callers
- * pass isInitialPleading(cr.documentServed) -- see
- * courtRulesIsInitialPleading in components/EventCard.tsx.
+ * If none of the four applies, baseDays is null and this returns null --
+ * see courtRulesIsInitialPleading / courtRulesIsSummaryJudgment /
+ * courtRulesDiscoveryType / courtRulesIsMotion in components/EventCard.tsx
+ * for how callers compute each flag.
  */
 export function computeDeadline(
   ruleSet: RuleSetKey,
@@ -390,16 +454,18 @@ export function computeDeadline(
   mailOrElectronicService: boolean,
   isSummaryJudgment: boolean = false,
   discoveryType: DiscoveryType | null = null,
-  isInitialPleadingFlag: boolean = false
+  isInitialPleadingFlag: boolean = false,
+  isMotionFlag: boolean = false
 ): (Rule6Result & { effectiveDays: number; baseDays: number }) | null {
-  const baseDays =
-    ruleSet === "masuperior" && isSummaryJudgment
-      ? SUPERIOR_SUMMARY_JUDGMENT_DAYS
-      : ruleSet === "marcp" && discoveryType
-      ? KNOWN_DISCOVERY_DAYS[discoveryType]
-      : ruleSet === "marcp" && isInitialPleadingFlag
-      ? ANSWER_DAYS
-      : KNOWN_OPPOSITION_DAYS[ruleSet];
+  const baseDays = isInitialPleadingFlag
+    ? ANSWER_DAYS
+    : ruleSet === "masuperior" && isSummaryJudgment
+    ? SUPERIOR_SUMMARY_JUDGMENT_DAYS
+    : ruleSet === "marcp" && discoveryType
+    ? KNOWN_DISCOVERY_DAYS[discoveryType]
+    : isMotionFlag
+    ? KNOWN_OPPOSITION_DAYS[ruleSet]
+    : null;
   if (baseDays == null) return null;
   const effectiveDays = mailOrElectronicService ? baseDays + 3 : baseDays;
   return { ...computeRule6Result(serviceDate, effectiveDays), effectiveDays, baseDays };
